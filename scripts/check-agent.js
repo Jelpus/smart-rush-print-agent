@@ -1,4 +1,6 @@
 const { config, validateConfigForSupabase } = require("../src/config");
+const fs = require("node:fs");
+const path = require("node:path");
 const { createSupabaseClient } = require("../src/supabaseClient");
 const { fetchAgentPrinters } = require("../src/printerRepository");
 const { isPortOpen } = require("../src/network");
@@ -8,10 +10,15 @@ async function main() {
   validateConfigForSupabase();
   const supabase = createSupabaseClient();
   const printers = await fetchAgentPrinters(supabase);
+  const versionPath = path.resolve(__dirname, "..", ".update-version");
+  const installedVersion = fs.existsSync(versionPath)
+    ? fs.readFileSync(versionPath, "utf8").trim()
+    : "unknown";
 
   console.log("SmartRush Print Agent check");
   console.log(`Supabase: ${config.supabaseUrl}`);
   console.log(`Agent ID: ${config.agentId}`);
+  console.log(`Installed version: ${installedVersion}`);
   console.log(`Printers found: ${printers.length}`);
 
   if (printers.length === 0) {

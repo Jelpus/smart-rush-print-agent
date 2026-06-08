@@ -113,13 +113,34 @@ function isPrepTicket(payload, options = {}) {
 
 function cleanList(values) {
   if (!Array.isArray(values)) return [];
-  return values
-    .map((value) => {
-      if (typeof value === "string") return value;
-      if (value && typeof value === "object") return value.name || value.label || value.title || "";
-      return "";
-    })
-    .filter(Boolean);
+  const seen = new Set();
+  const result = [];
+
+  for (const value of values) {
+    let label = "";
+    if (typeof value === "string") label = value;
+    else if (value && typeof value === "object") label = value.name || value.label || value.title || "";
+
+    const normalized = label.trim().toLowerCase();
+    if (!label || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(label);
+  }
+
+  return result;
+}
+
+function mergeLists(...lists) {
+  return cleanList(
+    lists
+      .filter(Array.isArray)
+      .flat()
+      .map((value) => {
+        if (typeof value === "string") return value;
+        if (value && typeof value === "object") return value.name || value.label || value.title || "";
+        return "";
+      }),
+  );
 }
 
 function prepLineDetails(item) {
@@ -128,10 +149,10 @@ function prepLineDetails(item) {
   if (item.variant_label) details.push(`Variante: ${item.variant_label}`);
   else if (item.selected_variant?.name) details.push(`Variante: ${item.selected_variant.name}`);
 
-  const extras = cleanList(item.extras_labels).concat(cleanList(item.selected_extras));
+  const extras = mergeLists(item.extras_labels, item.selected_extras);
   if (extras.length > 0) details.push(`Extras: ${extras.join(", ")}`);
 
-  const combos = cleanList(item.combo_labels).concat(cleanList(item.combo_selections));
+  const combos = mergeLists(item.combo_labels, item.combo_selections);
   if (combos.length > 0) details.push(`Combo: ${combos.join(", ")}`);
 
   const note = item.note_label || item.notes;

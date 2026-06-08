@@ -103,3 +103,49 @@ test("renders a prep ticket with variants and notes", () => {
   assert.equal(text.includes("Combo: Desayuno"), true);
   assert.equal(text.includes("Nota: sin canela"), true);
 });
+
+test("renders prep ticket selected variants and selected extras", () => {
+  const buffer = renderTicket({
+    type: "prep_ticket",
+    title: "BAR",
+    issued_at: "2026-06-08T10:40:34.851Z",
+    order: {
+      sale_by: "on-site",
+      actor_name: "guillermo@jelpus.com",
+      table_label: "T1",
+      guests_count: 4,
+    },
+    printer: {
+      name: "Impresora BAR",
+      role: "bar",
+    },
+    lines: [
+      {
+        name: "Capuccino",
+        notes: "sin azucar moreno",
+        quantity: 1,
+        note_label: "sin azucar moreno",
+        extras_labels: ["Azucar"],
+        variant_label: "Venti",
+        selected_extras: [
+          {
+            id: "d79da39e-c303-4148-ba2c-cca930642356",
+            name: "Azucar",
+            price: 0.5,
+          },
+        ],
+        selected_variant: {
+          id: "f0644faf-c163-48f7-96af-86ce33733fcb",
+          name: "Venti",
+          price_adjustment: 2,
+        },
+      },
+    ],
+  });
+
+  const text = buffer.toString("latin1");
+  assert.equal(text.includes("1 x Capuccino"), true);
+  assert.equal(text.includes("Variante: Venti"), true);
+  assert.equal(text.includes("Extras: Azucar"), true);
+  assert.equal(text.includes("Nota: sin azucar moreno"), true);
+});
