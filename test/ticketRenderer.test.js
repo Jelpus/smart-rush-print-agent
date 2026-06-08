@@ -66,3 +66,40 @@ test("renders a SmartRush sales ticket payload", () => {
   assert.equal(text.includes("Ticket dummy agente local"), true);
   assert.equal(text.includes("Total"), true);
 });
+
+test("renders a prep ticket with variants and notes", () => {
+  const buffer = renderTicket({
+    type: "prep_ticket",
+    title: "BAR",
+    issued_at: "2026-06-08T10:30:06.178Z",
+    order: {
+      sale_by: "on-site",
+      actor_name: "guillermo@jelpus.com",
+      table_label: "T1",
+      guests_count: 4,
+    },
+    printer: {
+      name: "Impresora BAR",
+      role: "bar",
+    },
+    lines: [
+      {
+        name: "Cafe con leche",
+        notes: "sin canela",
+        quantity: 1,
+        variant_label: "Leche de Avena",
+        extras_labels: ["Extra caliente"],
+        combo_labels: ["Desayuno"],
+      },
+    ],
+  });
+
+  const text = buffer.toString("latin1");
+  assert.equal(text.includes("BAR"), true);
+  assert.equal(text.includes("MESA: T1"), true);
+  assert.equal(text.includes("1 x Cafe con leche"), true);
+  assert.equal(text.includes("Variante: Leche de Avena"), true);
+  assert.equal(text.includes("Extras: Extra caliente"), true);
+  assert.equal(text.includes("Combo: Desayuno"), true);
+  assert.equal(text.includes("Nota: sin canela"), true);
+});

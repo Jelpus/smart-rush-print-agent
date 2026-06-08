@@ -40,7 +40,7 @@ async function markFailedOrRetry(supabase, job, errorMessage) {
 async function processJob(supabase, job) {
   try {
     const branchPrinter = await getPrinterForJob(supabase, job);
-    const ticket = renderTicket(job.payload);
+    const ticket = renderTicket(job.payload, { jobType: job.job_type });
     const connection = branchPrinter.connection || {};
     const connectionType = connection.type || "network";
     let printedTo = branchPrinter.name || connectionType;

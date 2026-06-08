@@ -24,8 +24,16 @@ function center(text) {
   return Buffer.concat([command(ESC, 0x61, 0x01), line(text), command(ESC, 0x61, 0x00)]);
 }
 
+function centerRaw(buffer) {
+  return Buffer.concat([command(ESC, 0x61, 0x01), buffer, command(ESC, 0x61, 0x00)]);
+}
+
 function bold(text) {
   return Buffer.concat([command(ESC, 0x45, 0x01), line(text), command(ESC, 0x45, 0x00)]);
+}
+
+function doubleSize(text) {
+  return Buffer.concat([command(GS, 0x21, 0x11), line(text), command(GS, 0x21, 0x00)]);
 }
 
 function divider() {
@@ -93,6 +101,85 @@ function twoColumns(left, right, width = 32) {
 
 function isSmartRushTicket(payload) {
   return Boolean(payload.receipt_number || payload.payment || payload.business || payload.order);
+}
+
+function isPrepTicket(payload, options = {}) {
+  return (
+    payload.type === "prep_ticket" ||
+    ["bar_ticket", "kitchen_ticket", "food_ticket", "kds_ticket"].includes(options.jobType) ||
+    ["BAR", "COCINA", "KITCHEN"].includes(String(payload.title || "").toUpperCase())
+  );
+}
+
+function cleanList(values) {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((value) => {
+      if (typeof value === "string") return value;
+      if (value && typeof value === "object") return value.name || value.label || value.title || "";
+      return "";
+    })
+    .filter(Boolean);
+}
+
+function prepLineDetails(item) {
+  const details = [];
+
+  if (item.variant_label) details.push(`Variante: ${item.variant_label}`);
+  else if (item.selected_variant?.name) details.push(`Variante: ${item.selected_variant.name}`);
+
+  const extras = cleanList(item.extras_labels).concat(cleanList(item.selected_extras));
+  if (extras.length > 0) details.push(`Extras: ${extras.join(", ")}`);
+
+  const combos = cleanList(item.combo_labels).concat(cleanList(item.combo_selections));
+  if (combos.length > 0) details.push(`Combo: ${combos.join(", ")}`);
+
+  const note = item.note_label || item.notes;
+  if (note) details.push(`Nota: ${note}`);
+
+  if (item.sent_at) details.push(`Enviado: ${formatDate(item.sent_at, item.timezone)}`);
+
+  return details;
+}
+
+function renderPrepTicket(payload) {
+  const parts = [command(ESC, 0x40)];
+  const title = payload.title || payload.printer?.role?.toUpperCase() || "COMANDA";
+  const order = payload.order || {};
+
+  parts.push(center("*****"));
+  parts.push(centerRaw(doubleSize(title)));
+  parts.push(center("*****"));
+  parts.push(divider());
+
+  if (order.table_label) parts.push(bold(`MESA: ${order.table_label}`));
+  if (order.guests_count) parts.push(line(twoColumns("Personas", order.guests_count)));
+  if (order.sale_by) parts.push(line(twoColumns("Canal", order.sale_by)));
+  if (order.actor_name) parts.push(line(twoColumns("Enviado por", order.actor_name)));
+  if (payload.issued_at) parts.push(line(twoColumns("Hora", formatDate(payload.issued_at, payload.branch?.timezone))));
+
+  parts.push(divider());
+
+  const lines = Array.isArray(payload.lines) ? payload.lines : [];
+  for (const item of lines) {
+    const quantity = item.quantity || 1;
+    const name = item.name || item.text || "";
+    parts.push(bold(`${quantity} x ${name}`));
+    for (const detail of prepLineDetails(item)) {
+      parts.push(line(`  - ${detail}`));
+    }
+    parts.push(line());
+  }
+
+  parts.push(divider());
+  if (payload.printer?.name) parts.push(center(payload.printer.name));
+  parts.push(feed(config.feedLinesBeforeCut));
+
+  if (config.cutAfterPrint) {
+    parts.push(command(GS, 0x56, 0x00));
+  }
+
+  return Buffer.concat(parts);
 }
 
 function renderSmartRushTicket(payload) {
@@ -238,7 +325,7 @@ function renderStructuredTicket(payload) {
   return Buffer.concat(parts);
 }
 
-function renderTicket(payload) {
+function renderTicket(payload, options = {}) {
   if (!payload) {
     throw new Error("Print job payload is empty");
   }
@@ -253,6 +340,10 @@ function renderTicket(payload) {
 
   if (payload.rawHex) {
     return Buffer.from(payload.rawHex.replace(/\s+/g, ""), "hex");
+  }
+
+  if (isPrepTicket(payload, options)) {
+    return renderPrepTicket(payload);
   }
 
   if (isSmartRushTicket(payload)) {
