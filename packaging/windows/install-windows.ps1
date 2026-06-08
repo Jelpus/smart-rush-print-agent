@@ -50,6 +50,25 @@ function Install-Node {
   winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements
 }
 
+function Stop-ExistingAgent {
+  Write-Host "Deteniendo SmartRush Print Agent anterior si existe..."
+
+  Remove-Item -LiteralPath $ShortcutPath -Force -ErrorAction SilentlyContinue
+
+  $processes = Get-CimInstance Win32_Process | Where-Object {
+    $_.CommandLine -and (
+      $_.CommandLine -like "*$AppDir*" -or
+      $_.CommandLine -like "*run-agent.cmd*" -or
+      $_.CommandLine -like "*run-agent-hidden.vbs*"
+    )
+  }
+
+  foreach ($process in $processes) {
+    if ($process.ProcessId -eq $PID) { continue }
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+}
+
 $node = Find-Node
 $npm = Find-Npm
 
@@ -63,6 +82,8 @@ if (-not $node -or -not $npm) {
 if (-not $node -or -not $npm) {
   throw "No se pudo encontrar Node.js despues de instalarlo."
 }
+
+Stop-ExistingAgent
 
 New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null

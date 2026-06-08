@@ -140,6 +140,7 @@ function page() {
           "ZIP generado correctamente.",
           "Sucursal: " + data.branchName,
           "Agent ID: " + data.agentId,
+          "Version: " + data.sourceVersion,
           "Archivo: " + data.fileName,
           "",
           '<a href="' + data.downloadUrl + '">Descargar ZIP</a>'
@@ -170,6 +171,7 @@ async function handleBuild(request, response) {
     branchName: result.branch.name || result.branch.id,
     agentId: result.agentId,
     agentCode: result.agentCode,
+    sourceVersion: result.sourceVersion,
   });
 }
 

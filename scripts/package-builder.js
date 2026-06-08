@@ -258,6 +258,7 @@ async function buildPackage({ platform, branchId, agentName, agentCode }) {
   });
   const packageInfo = buildPackageDirectory({ platform, envText });
   packageInfo.packageName = `${branchId}-${platform}`;
+  const sourceVersion = getSourceVersion();
   const zipPath = await zipDirectory(packageInfo);
 
   return {
@@ -266,6 +267,7 @@ async function buildPackage({ platform, branchId, agentName, agentCode }) {
     branch: createdAgent.branch.data,
     agentId: createdAgent.agentId,
     agentCode: createdAgent.agentCode,
+    sourceVersion,
   };
 }
 
