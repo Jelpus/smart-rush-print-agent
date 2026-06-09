@@ -99,6 +99,10 @@ function twoColumns(left, right, width = 32) {
   return `${cleanLeft}${" ".repeat(space)}${cleanRight}`;
 }
 
+function isPreTicket(payload) {
+  return payload.document_kind === "pre_ticket" || Boolean(payload.pre_ticket);
+}
+
 function isSmartRushTicket(payload) {
   return Boolean(payload.receipt_number || payload.payment || payload.business || payload.order);
 }
@@ -194,6 +198,128 @@ function renderPrepTicket(payload) {
 
   parts.push(divider());
   if (payload.printer?.name) parts.push(center(payload.printer.name));
+  parts.push(feed(config.feedLinesBeforeCut));
+
+  if (config.cutAfterPrint) {
+    parts.push(command(GS, 0x56, 0x00));
+  }
+
+  return Buffer.concat(parts);
+}
+
+function modifierLine(modifier, currency) {
+  if (!modifier || typeof modifier !== "object") return "";
+  const label = modifier.label || modifier.type || "Opcion";
+  const value = modifier.value || modifier.name || modifier.title || "";
+  const amount =
+    modifier.amount !== null && modifier.amount !== undefined && Number(modifier.amount) !== 0
+      ? ` (${money(modifier.amount, currency)})`
+      : "";
+  return [label, value].filter(Boolean).join(": ") + amount;
+}
+
+function hasPositiveAmount(value) {
+  return Number(value || 0) > 0;
+}
+
+function renderPreTicket(payload) {
+  const parts = [command(ESC, 0x40)];
+  const businessName = payload.business?.display_name || payload.tenant?.name || payload.title || "SmartRush";
+  const preTicket = payload.pre_ticket || {};
+  const summary = preTicket.summary || {};
+  const sections = Array.isArray(preTicket.sections) ? preTicket.sections : [];
+  const discounts = Array.isArray(preTicket.discounts)
+    ? preTicket.discounts
+    : Array.isArray(preTicket.applied_promotions)
+      ? preTicket.applied_promotions
+      : [];
+  const currency = payload.payment?.currency;
+  const hasPayments = Boolean(summary.has_payments) || hasPositiveAmount(summary.total_paid);
+  const hasDiscounts = discounts.length > 0 || hasPositiveAmount(summary.total_discounts);
+
+  parts.push(center(businessName));
+  if (payload.order?.table_label) parts.push(center(`Mesa ${payload.order.table_label}`));
+  parts.push(center("PRE-TICKET"));
+  if (payload.receipt_number) parts.push(center(payload.receipt_number));
+  parts.push(divider());
+
+  if (payload.issued_at) parts.push(line(twoColumns("Fecha", formatDate(payload.issued_at, payload.branch?.timezone))));
+  if (payload.order?.code || payload.order_id) {
+    parts.push(line(twoColumns("Orden", payload.order?.code || String(payload.order_id).slice(0, 8))));
+  }
+  if (payload.order?.sale_by_label) parts.push(line(twoColumns("Canal", payload.order.sale_by_label)));
+  if (payload.order?.guests_count) parts.push(line(twoColumns("Personas", payload.order.guests_count)));
+  if (payload.cashier) parts.push(line(twoColumns("Atendido por", payload.cashier)));
+
+  for (const section of sections) {
+    const items = Array.isArray(section.items) ? section.items : [];
+    const label = section.label || section.key || "Detalle";
+    parts.push(divider());
+    parts.push(bold(twoColumns(label.toUpperCase(), money(section.total || 0, currency))));
+
+    if (items.length === 0) {
+      parts.push(line("  Sin items"));
+      continue;
+    }
+
+    for (const item of items) {
+      const quantity = item.quantity || 1;
+      const name = item.name || item.text || "";
+      parts.push(line(twoColumns(`${quantity} x ${name}`, money(item.line_total, currency))));
+      parts.push(line(twoColumns("  Unitario", money(item.unit_price, currency))));
+      if (item.status_label) parts.push(line(twoColumns("  Estado", item.status_label)));
+      parts.push(line(twoColumns("  Pagado", money(item.paid_amount || 0, currency))));
+      if (hasPositiveAmount(item.discount_amount)) {
+        parts.push(line(twoColumns("  Descuento", `-${money(item.discount_amount, currency)}`)));
+      }
+      parts.push(line(twoColumns("  Pendiente", money(item.outstanding_amount || 0, currency))));
+
+      const modifiers = Array.isArray(item.modifiers) ? item.modifiers : [];
+      for (const modifier of modifiers) {
+        const detail = modifierLine(modifier, currency);
+        if (detail) parts.push(line(`  - ${detail}`));
+      }
+
+      if (item.notes) parts.push(line(`  Nota: ${item.notes}`));
+      parts.push(line());
+    }
+  }
+
+  if (hasDiscounts) {
+    parts.push(divider());
+    parts.push(bold("DESCUENTOS / PROMOS"));
+    if (discounts.length === 0) {
+      parts.push(line(twoColumns("Descuentos aplicados", `-${money(summary.total_discounts || 0, currency)}`)));
+    } else {
+      for (const discount of discounts) {
+        const name = discount.name || discount.description || "Descuento";
+        const amount = discount.amount ?? discount.discount;
+        parts.push(line(twoColumns(name, `-${money(amount, currency)}`)));
+        if (discount.description && discount.description !== name) {
+          parts.push(line(`  ${discount.description}`));
+        }
+      }
+    }
+  }
+
+  parts.push(divider());
+  if (!hasPayments && !hasDiscounts) {
+    parts.push(bold(twoColumns("Total cuenta", money(summary.total_account, currency))));
+  } else {
+    parts.push(line(twoColumns("Total cuenta", money(summary.total_account, currency))));
+    if (hasDiscounts) {
+      parts.push(line(twoColumns("Total descuentos", `-${money(summary.total_discounts || 0, currency)}`)));
+    }
+    if (hasPayments) {
+      parts.push(line(twoColumns("Total pagado", money(summary.total_paid || 0, currency))));
+    }
+    parts.push(bold(twoColumns("Total por pagar", money(summary.total_due, currency))));
+  }
+
+  parts.push(divider());
+  parts.push(center(payload.footer || "Documento no fiscal"));
+  parts.push(center("Sistema automatizado por Smart Rush"));
+  parts.push(center("www.smartrush.io"));
   parts.push(feed(config.feedLinesBeforeCut));
 
   if (config.cutAfterPrint) {
@@ -361,6 +487,10 @@ function renderTicket(payload, options = {}) {
 
   if (payload.rawHex) {
     return Buffer.from(payload.rawHex.replace(/\s+/g, ""), "hex");
+  }
+
+  if (isPreTicket(payload)) {
+    return renderPreTicket(payload);
   }
 
   if (isPrepTicket(payload, options)) {
