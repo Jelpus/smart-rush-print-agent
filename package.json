@@ -10,6 +10,8 @@
     "check-agent": "node scripts/check-agent.js",
     "package-ui": "node scripts/package-ui.js",
     "build-package": "node scripts/build-package.js",
+    "build-android-activation": "node scripts/build-android-activation.js",
+    "build-android-package": "node scripts/build-android-package.js",
     "test": "node --test"
   },
   "keywords": [],
@@ -21,6 +23,7 @@
     "archiver": "^8.0.0",
     "dotenv": "^17.4.2",
     "iconv-lite": "^0.7.2",
+    "qrcode": "^1.5.4",
     "tar": "^7.5.16"
   }
 }

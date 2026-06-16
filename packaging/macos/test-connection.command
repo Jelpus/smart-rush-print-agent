@@ -14,8 +14,36 @@ else
   exit 1
 fi
 
+find_node() {
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+
+  for candidate in "/opt/homebrew/bin/node" "/usr/local/bin/node"; do
+    if [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+NODE_BIN="$(find_node || true)"
+
+if [ -z "$NODE_BIN" ]; then
+  echo "No se encontro Node.js."
+  echo "Primero ejecuta install-macos.command para instalar SmartRush Print Agent."
+  echo "Si ya lo ejecutaste, instala Node.js LTS desde https://nodejs.org/en/download y vuelve a probar."
+  echo ""
+  echo "Pulsa cualquier tecla para cerrar."
+  read -r -n 1
+  exit 1
+fi
+
 cd "$APP_DIR"
-node scripts/check-agent.js
+"$NODE_BIN" scripts/check-agent.js
 echo ""
 echo "Pulsa cualquier tecla para cerrar."
 read -r -n 1

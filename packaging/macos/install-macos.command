@@ -40,11 +40,38 @@ find_npm() {
   return 1
 }
 
+find_brew() {
+  if command -v brew >/dev/null 2>&1; then
+    command -v brew
+    return 0
+  fi
+
+  for candidate in "/opt/homebrew/bin/brew" "/usr/local/bin/brew"; do
+    if [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+user_is_admin() {
+  id -Gn | tr ' ' '\n' | grep -qx admin
+}
+
 NODE_BIN="$(find_node || true)"
 NPM_BIN="$(find_npm || true)"
+BREW_BIN="$(find_brew || true)"
 
 if [ -z "$NODE_BIN" ] || [ -z "$NPM_BIN" ]; then
-  if ! command -v brew >/dev/null 2>&1; then
+  if [ -z "$BREW_BIN" ]; then
+    if ! user_is_admin; then
+      osascript -e 'display dialog "No se encontro Node.js y esta cuenta de macOS no es administradora. Inicia sesion con un usuario administrador, instala Node.js LTS y vuelve a ejecutar este instalador." buttons {"OK"} default button "OK"'
+      open "https://nodejs.org/en/download"
+      exit 1
+    fi
+
     osascript -e 'display dialog "SmartRush Print Agent instalara Homebrew y Node.js. Es posible que macOS pida tu password." buttons {"OK"} default button "OK"'
     NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
@@ -53,9 +80,11 @@ if [ -z "$NODE_BIN" ] || [ -z "$NPM_BIN" ]; then
     elif [ -x "/usr/local/bin/brew" ]; then
       eval "$(/usr/local/bin/brew shellenv)"
     fi
+
+    BREW_BIN="$(find_brew || true)"
   fi
 
-  brew install node
+  "$BREW_BIN" install node
   NODE_BIN="$(find_node || true)"
   NPM_BIN="$(find_npm || true)"
 fi

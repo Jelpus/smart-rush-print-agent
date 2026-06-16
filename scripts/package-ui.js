@@ -1,9 +1,8 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createClient } = require("@supabase/supabase-js");
 const { buildPackage } = require("./package-builder");
-const { config } = require("../src/config");
+const { buildAndroidPackage } = require("./android-activation-builder");
 
 const PORT = Number.parseInt(process.env.PACKAGE_UI_PORT || "4310", 10);
 const DIST_DIR = path.resolve(__dirname, "..", "dist");
@@ -90,13 +89,14 @@ function page() {
       font-size: 13px;
     }
     a { color: #0f5bd7; font-weight: 700; }
+    [hidden] { display: none !important; }
     @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <main>
     <h1>SmartRush Package Builder</h1>
-    <p>Genera un ZIP instalable para el agente local. El token se crea nuevo por paquete y se guarda solo dentro del ZIP.</p>
+    <p>Genera un ZIP instalable para Windows, macOS o Android. Cada token se crea nuevo para esa instalacion.</p>
 
     <form id="form">
       <label for="branchId">Branch ID</label>
@@ -104,12 +104,17 @@ function page() {
 
       <label for="platform">Instalador</label>
       <select id="platform" name="platform" required>
-        <option value="macos">macOS</option>
-        <option value="windows">Windows</option>
-        <option value="android" disabled>Android proximamente</option>
+        <option value="macos">macOS ZIP</option>
+        <option value="windows">Windows ZIP</option>
+        <option value="android">Android APK + QR</option>
       </select>
 
-      <button id="submit" type="submit">Generar ZIP</button>
+      <div id="androidOptions" hidden>
+        <label for="expiresMinutes">Vencimiento QR Android en minutos</label>
+        <input id="expiresMinutes" name="expiresMinutes" type="number" min="5" max="1440" value="30">
+      </div>
+
+      <button id="submit" type="submit">Generar</button>
     </form>
 
     <div id="result" class="result" hidden></div>
@@ -119,14 +124,23 @@ function page() {
     const form = document.getElementById("form");
     const button = document.getElementById("submit");
     const result = document.getElementById("result");
+    const platform = document.getElementById("platform");
+    const androidOptions = document.getElementById("androidOptions");
+
+    function syncAndroidOptions() {
+      androidOptions.hidden = platform.value !== "android";
+    }
+
+    platform.addEventListener("change", syncAndroidOptions);
+    syncAndroidOptions();
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       button.disabled = true;
       result.hidden = false;
+      const payload = Object.fromEntries(new FormData(form).entries());
       result.textContent = "Generando paquete...";
 
-      const payload = Object.fromEntries(new FormData(form).entries());
       try {
         const response = await fetch("/api/build", {
           method: "POST",
@@ -134,17 +148,29 @@ function page() {
           body: JSON.stringify(payload),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Error generando ZIP");
+        if (!response.ok) throw new Error(data.error || "Error generando archivo");
 
-        result.innerHTML = [
-          "ZIP generado correctamente.",
-          "Sucursal: " + data.branchName,
-          "Agent ID: " + data.agentId,
-          "Version: " + data.sourceVersion,
-          "Archivo: " + data.fileName,
-          "",
-          '<a href="' + data.downloadUrl + '">Descargar ZIP</a>'
-        ].join("\\n");
+        if (data.artifactType === "android-package") {
+          result.innerHTML = [
+            "ZIP Android generado correctamente.",
+            "Sucursal: " + data.branchName,
+            "Activation ID: " + data.activationId,
+            "Vence: " + new Date(data.expiresAt).toLocaleString(),
+            "Archivo: " + data.fileName,
+            "",
+            '<a href="' + data.downloadUrl + '">Descargar ZIP Android</a>'
+          ].join("\\n");
+        } else {
+          result.innerHTML = [
+            "ZIP generado correctamente.",
+            "Sucursal: " + data.branchName,
+            "Agent ID: " + data.agentId,
+            "Version: " + data.sourceVersion,
+            "Archivo: " + data.fileName,
+            "",
+            '<a href="' + data.downloadUrl + '">Descargar ZIP</a>'
+          ].join("\\n");
+        }
       } catch (error) {
         result.textContent = "Error: " + error.message;
       } finally {
@@ -159,10 +185,29 @@ function page() {
 async function handleBuild(request, response) {
   const body = await readBody(request);
   const payload = JSON.parse(body || "{}");
-    const result = await buildPackage({
-      platform: payload.platform,
+
+  if (payload.platform === "android") {
+    const result = await buildAndroidPackage({
       branchId: String(payload.branchId || "").trim(),
+      expiresMinutes: payload.expiresMinutes,
     });
+    const fileName = path.basename(result.zipPath);
+
+    json(response, 200, {
+      artifactType: "android-package",
+      fileName,
+      downloadUrl: `/download/${encodeURIComponent(fileName)}`,
+      branchName: result.branch.name || result.branch.id,
+      activationId: result.activationId,
+      expiresAt: result.expiresAt,
+    });
+    return;
+  }
+
+  const result = await buildPackage({
+    platform: payload.platform,
+    branchId: String(payload.branchId || "").trim(),
+  });
 
   const fileName = path.basename(result.zipPath);
   json(response, 200, {
@@ -185,8 +230,16 @@ function handleDownload(request, response) {
     return;
   }
 
+  const contentTypes = {
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".zip": "application/zip",
+  };
+  const ext = path.extname(safeName).toLowerCase();
+
   response.writeHead(200, {
-    "Content-Type": "application/zip",
+    "Content-Type": contentTypes[ext] || "application/octet-stream",
     "Content-Disposition": `attachment; filename="${safeName}"`,
   });
   fs.createReadStream(filePath).pipe(response);

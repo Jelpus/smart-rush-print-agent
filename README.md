@@ -24,7 +24,14 @@ UPDATE_BRANCH=main
 
 1. Asegurate de tener en Supabase las tablas base de `schema.sql`.
 2. Ejecuta `supabase/print-agent-rpcs.sql` en Supabase.
-3. Crea un agente desde SQL Editor:
+3. Si vas a usar la app Android unica con QR, ejecuta tambien:
+
+```sql
+-- Supabase SQL Editor
+-- copia y ejecuta el contenido completo de:
+-- supabase/print-agent-activations.sql
+```
+4. Crea un agente desde SQL Editor:
 
 ```sql
 select *
@@ -38,8 +45,8 @@ from public.create_print_agent(
 
 Guarda el `agent_token` devuelto. Supabase solo guardara el hash; el token completo se muestra una vez.
 
-4. Copia `.env.example` a `.env.locale`.
-5. Completa:
+5. Copia `.env.example` a `.env.locale`.
+6. Completa:
 
 ```env
 SUPABASE_URL=https://your-project.supabase.co
@@ -49,6 +56,39 @@ AGENT_ID=smartrush-local-printer-01
 ```
 
 No uses `SUPABASE_SERVICE_ROLE_KEY` en la maquina del cliente. El agente solo necesita anon key + `PRINT_AGENT_TOKEN`.
+
+## Paquete Android con QR
+
+La app Android debe ser unica. En vez de compilar una app distinta por sucursal, generamos un ZIP por sucursal con el APK comun y un QR temporal de un solo uso. La app escanea el QR, llama a `activate_print_agent` y recibe su `agent_id` y `agent_token`.
+
+Antes de generar paquetes Android, aplica `supabase/print-agent-activations.sql` en Supabase. En la maquina interna necesitas `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` y `SUPABASE_ANON_KEY` en `.env.locale`.
+
+El cliente no instala Android Studio ni Android SDK. Solo instala el APK.
+
+Genera el paquete Android por CLI:
+
+```bash
+node scripts/build-android-package.js --branchId 89f2ddc1-b077-4503-860c-f1f79c4e2a3e --expiresMinutes 30
+```
+
+Tambien puedes abrir la UI local:
+
+```bash
+npm run package-ui
+```
+
+Selecciona `Android APK + QR`. El generador crea un ZIP en `dist/`:
+
+- `BRANCH_ID-android.zip`
+
+El ZIP contiene:
+
+- `SmartRush-Print-Agent-Android.apk`: app Android comun.
+- `activar-android.html`: hoja con el QR.
+- `activar-android.png`: imagen QR directa.
+- `README-cliente.txt`: instrucciones de instalacion.
+
+El QR vence por defecto en 30 minutos y solo puede activarse una vez.
 
 ## branch_printers.connection
 
