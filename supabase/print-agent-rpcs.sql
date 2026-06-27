@@ -18,6 +18,41 @@ create table if not exists public.print_agents (
   updated_at timestamptz not null default now()
 );
 
+alter table public.print_agents
+  add column if not exists poll_interval_ms int not null default 5000,
+  add column if not exists batch_size int not null default 5,
+  add column if not exists retry_delay_seconds int not null default 30;
+
+do $$
+begin
+  alter table public.print_agents
+    add constraint print_agents_poll_interval_ms_check
+    check (poll_interval_ms between 1000 and 60000);
+exception
+  when duplicate_object then null;
+end;
+$$;
+
+do $$
+begin
+  alter table public.print_agents
+    add constraint print_agents_batch_size_check
+    check (batch_size between 1 and 25);
+exception
+  when duplicate_object then null;
+end;
+$$;
+
+do $$
+begin
+  alter table public.print_agents
+    add constraint print_agents_retry_delay_seconds_check
+    check (retry_delay_seconds between 1 and 300);
+exception
+  when duplicate_object then null;
+end;
+$$;
+
 create index if not exists print_agents_branch_active_idx
   on public.print_agents (branch_id, is_active);
 
@@ -151,6 +186,40 @@ end;
 $$;
 
 grant execute on function public.get_agent_printers(text) to anon, authenticated;
+
+create or replace function public.get_print_agent_config(
+  p_agent_token text
+)
+returns table (
+  poll_interval_ms int,
+  batch_size int,
+  retry_delay_seconds int
+)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_agent public.print_agents;
+begin
+  v_agent := public._print_agent_from_token(p_agent_token);
+
+  update public.print_agents
+  set last_seen_at = now(),
+      updated_at = now()
+  where print_agents.id = v_agent.id;
+
+  return query
+  select
+    greatest(1000, least(coalesce(a.poll_interval_ms, 5000), 60000))::int,
+    greatest(1, least(coalesce(a.batch_size, 5), 25))::int,
+    greatest(1, least(coalesce(a.retry_delay_seconds, 30), 300))::int
+  from public.print_agents a
+  where a.id = v_agent.id;
+end;
+$$;
+
+grant execute on function public.get_print_agent_config(text) to anon, authenticated;
 
 create or replace function public.claim_print_jobs_for_agent(
   p_agent_token text,

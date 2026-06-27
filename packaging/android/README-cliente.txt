@@ -20,6 +20,9 @@ Instalacion
 5. Pulsa Escanear codigo QR.
 6. Escanea el QR de activar-android.html o activar-android.png.
 7. La app quedara vinculada a la sucursal.
+8. Por seguridad, el agente queda en modo pausado.
+9. Para que empiece a reclamar trabajos, pulsa Agente pausado - activar.
+10. Para detenerlo, pulsa Agente activo - pausar.
 
 Notas
 -----
@@ -28,3 +31,4 @@ Notas
 - Si vence o ya fue usado, genera un paquete Android nuevo desde SmartRush Package Builder.
 - El telefono debe estar en la misma red local que las impresoras para imprimir por TCP 9100.
 - Si ya existe un agente Mac o Windows funcionando, puede seguir activo. Este agente Android puede coexistir.
+- Si la app esta pausada, no reclama trabajos ni imprime tickets reales.

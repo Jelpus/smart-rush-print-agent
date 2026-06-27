@@ -33,5 +33,9 @@ Con el movil en depuracion USB:
 1. Escanea el QR generado por `scripts/build-android-activation.js`.
 2. La app llama a `activate_print_agent`.
 3. Guarda `agent_id` y `agent_token` en preferencias privadas.
-4. Permite consultar impresoras activas.
-5. Permite enviar una prueba ESC/POS por TCP a la primera impresora de red con IP.
+4. Queda pausada por defecto.
+5. Permite consultar impresoras activas.
+6. Permite enviar una prueba ESC/POS por TCP a la primera impresora `receipt` de red con IP.
+7. Si se pulsa `Agente pausado - activar`, reclama trabajos con `claim_print_jobs_for_agent`, imprime por TCP 9100 y marca `printed`/`failed`.
+
+El polling funciona mientras la app esta abierta. Para un agente 24/7 en Android hay que convertir este flujo en un foreground service con notificacion permanente.

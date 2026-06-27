@@ -88,7 +88,7 @@ El ZIP contiene:
 - `activar-android.png`: imagen QR directa.
 - `README-cliente.txt`: instrucciones de instalacion.
 
-El QR vence por defecto en 30 minutos y solo puede activarse una vez.
+El QR vence por defecto en 30 minutos y solo puede activarse una vez. Tras escanearlo, Android queda pausado por seguridad. Solo reclama trabajos cuando el usuario pulsa `Agente pausado - activar`; puede detenerse con `Agente activo - pausar`.
 
 ## branch_printers.connection
 
