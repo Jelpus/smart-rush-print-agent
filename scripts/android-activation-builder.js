@@ -294,7 +294,68 @@ async function buildAndroidPackage({ branchId, agentName, agentCode, expiresMinu
   };
 }
 
+async function buildAndroidQrPackage({ branchId, agentName, agentCode, expiresMinutes }) {
+  const activation = await createAndroidActivation({
+    branchId,
+    agentName,
+    agentCode,
+    expiresMinutes,
+  });
+
+  const cleanBranchId = String(branchId || "").trim();
+  const packageName = `${cleanBranchId}-android-qr`;
+  const packageDir = path.join(DIST_DIR, "SmartRush-Print-Agent-Android-QR");
+  const zipPath = path.join(DIST_DIR, `${packageName}.zip`);
+
+  fs.rmSync(packageDir, { recursive: true, force: true });
+  fs.mkdirSync(packageDir, { recursive: true });
+
+  copyFile(activation.htmlPath, path.join(packageDir, "activar-android.html"));
+  copyFile(activation.pngPath, path.join(packageDir, "activar-android.png"));
+  copyFile(activation.jsonPath, path.join(packageDir, "activar-android.json"));
+  fs.writeFileSync(
+    path.join(packageDir, "README-cliente.txt"),
+    [
+      "SmartRush Print Agent para Android - solo QR",
+      "============================================",
+      "",
+      "Usa este paquete cuando la app Android ya esta instalada y solo necesitas vincularla otra vez.",
+      "",
+      "Contenido:",
+      "",
+      "- activar-android.html",
+      "- activar-android.png",
+      "- activar-android.json",
+      "",
+      "Pasos:",
+      "",
+      "1. Abre SmartRush Print Agent en el telefono Android.",
+      "2. Pulsa Escanear codigo QR.",
+      "3. Escanea el QR de activar-android.html o activar-android.png.",
+      "4. La app quedara vinculada a la sucursal.",
+      "",
+      "El QR es temporal y de un solo uso.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await zipDirectory({ sourceDir: packageDir, zipPath });
+
+  return {
+    ...activation,
+    artifactType: "android-qr",
+    packageName,
+    packageDir,
+    zipPath,
+    clientHtmlPath: path.join(packageDir, "activar-android.html"),
+    clientPngPath: path.join(packageDir, "activar-android.png"),
+    clientJsonPath: path.join(packageDir, "activar-android.json"),
+  };
+}
+
 module.exports = {
   buildAndroidPackage,
+  buildAndroidQrPackage,
   createAndroidActivation,
 };

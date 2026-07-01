@@ -1,11 +1,59 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const { buildPackage } = require("./package-builder");
-const { buildAndroidPackage } = require("./android-activation-builder");
+const { buildAndroidPackage, buildAndroidQrPackage } = require("./android-activation-builder");
 
-const PORT = Number.parseInt(process.env.PACKAGE_UI_PORT || "4310", 10);
+const HOST = "127.0.0.1";
+const DEFAULT_PORT = 4500;
+const PORT = parsePort(process.env.PACKAGE_UI_PORT, DEFAULT_PORT);
+const PORT_RETRY_COUNT = 30;
 const DIST_DIR = path.resolve(__dirname, "..", "dist");
+
+function parsePort(value, fallback) {
+  const port = Number.parseInt(value || "", 10);
+  if (Number.isNaN(port) || port < 1 || port > 65535) return fallback;
+  return port;
+}
+
+function getCandidatePorts(startPort) {
+  const ports = [];
+  const add = (port) => {
+    if (port >= 1 && port <= 65535 && !ports.includes(port)) ports.push(port);
+  };
+
+  add(startPort);
+  for (let port = DEFAULT_PORT; port < DEFAULT_PORT + PORT_RETRY_COUNT; port += 1) {
+    add(port);
+  }
+  for (let port = startPort + 1; port <= startPort + PORT_RETRY_COUNT; port += 1) {
+    add(port);
+  }
+
+  return ports;
+}
+
+function openBrowser(url) {
+  if (process.env.PACKAGE_UI_NO_OPEN === "true") return;
+
+  let command;
+  let args;
+  if (process.platform === "win32") {
+    command = "cmd";
+    args = ["/c", "start", "", url];
+  } else if (process.platform === "darwin") {
+    command = "open";
+    args = [url];
+  } else {
+    command = "xdg-open";
+    args = [url];
+  }
+
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.on("error", () => {});
+  child.unref();
+}
 
 function json(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -110,6 +158,12 @@ function page() {
       </select>
 
       <div id="androidOptions" hidden>
+        <label for="androidMode">Android</label>
+        <select id="androidMode" name="androidMode">
+          <option value="full">Todo: APK + QR</option>
+          <option value="qr">Solo otro QR</option>
+        </select>
+
         <label for="expiresMinutes">Vencimiento QR Android en minutos</label>
         <input id="expiresMinutes" name="expiresMinutes" type="number" min="5" max="1440" value="30">
       </div>
@@ -150,15 +204,21 @@ function page() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Error generando archivo");
 
-        if (data.artifactType === "android-package") {
+        if (data.artifactType === "android-package" || data.artifactType === "android-qr") {
           result.innerHTML = [
-            "ZIP Android generado correctamente.",
+            data.artifactType === "android-qr"
+              ? "ZIP Android solo QR generado correctamente."
+              : "ZIP Android completo generado correctamente.",
             "Sucursal: " + data.branchName,
             "Activation ID: " + data.activationId,
             "Vence: " + new Date(data.expiresAt).toLocaleString(),
             "Archivo: " + data.fileName,
             "",
-            '<a href="' + data.downloadUrl + '">Descargar ZIP Android</a>'
+            '<a href="' + data.downloadUrl + '">' + (
+              data.artifactType === "android-qr"
+                ? "Descargar ZIP solo QR"
+                : "Descargar ZIP Android completo"
+            ) + '</a>'
           ].join("\\n");
         } else {
           result.innerHTML = [
@@ -187,14 +247,15 @@ async function handleBuild(request, response) {
   const payload = JSON.parse(body || "{}");
 
   if (payload.platform === "android") {
-    const result = await buildAndroidPackage({
+    const build = payload.androidMode === "qr" ? buildAndroidQrPackage : buildAndroidPackage;
+    const result = await build({
       branchId: String(payload.branchId || "").trim(),
       expiresMinutes: payload.expiresMinutes,
     });
     const fileName = path.basename(result.zipPath);
 
     json(response, 200, {
-      artifactType: "android-package",
+      artifactType: result.artifactType || "android-package",
       fileName,
       downloadUrl: `/download/${encodeURIComponent(fileName)}`,
       branchName: result.branch.name || result.branch.id,
@@ -271,18 +332,36 @@ const server = http.createServer(async (request, response) => {
 });
 
 function startServer() {
-  server.listen(PORT, () => {
-    const url = `http://localhost:${PORT}`;
-    console.log(`SmartRush Package Builder: ${url}`);
-    if (process.env.PACKAGE_UI_NO_OPEN === "true") {
-      return;
-    }
-    if (process.platform === "win32") {
-      require("node:child_process").exec(`start ${url}`);
-    } else if (process.platform === "darwin") {
-      require("node:child_process").exec(`open ${url}`);
-    }
-  });
+  const ports = getCandidatePorts(PORT);
+
+  function tryListen(index) {
+    const port = ports[index];
+    const onListening = () => {
+      server.off("error", onError);
+      const url = `http://${HOST}:${port}`;
+      console.log(`SmartRush Package Builder: ${url}`);
+      openBrowser(url);
+    };
+    const onError = (error) => {
+      server.off("listening", onListening);
+      const canRetry = ["EACCES", "EADDRINUSE"].includes(error.code) && index < ports.length - 1;
+      if (canRetry) {
+        console.log(`Puerto ${port} no disponible (${error.code}); probando ${ports[index + 1]}.`);
+        tryListen(index + 1);
+        return;
+      }
+
+      console.error(`No se pudo iniciar SmartRush Package Builder en un puerto local.`);
+      console.error(error.message);
+      process.exitCode = 1;
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, HOST);
+  }
+
+  tryListen(0);
 }
 
 if (require.main === module) {
