@@ -1,6 +1,5 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { ZipArchive } = require("archiver");
 const { createClient } = require("@supabase/supabase-js");
 const { execFileSync } = require("node:child_process");
 const { config } = require("../src/config");
@@ -210,6 +209,7 @@ function buildPackageDirectory({ platform, envText }) {
 }
 
 async function zipDirectory({ packageDir, packageName }) {
+  const { ZipArchive } = await import("archiver");
   fs.mkdirSync(DIST_DIR, { recursive: true });
   const zipPath = path.join(DIST_DIR, `${packageName}.zip`);
   fs.rmSync(zipPath, { force: true });

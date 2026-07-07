@@ -1,7 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const archiver = require("archiver");
 const { createClient } = require("@supabase/supabase-js");
 const { config } = require("../config");
 const { httpError } = require("./http");
@@ -223,7 +222,8 @@ function appendPathRecursive(archive, sourcePath, zipPath) {
 }
 
 async function zipToBuffer(buildArchive) {
-  const archive = archiver("zip", { zlib: { level: 9 } });
+  const { ZipArchive } = await import("archiver");
+  const archive = new ZipArchive({ zlib: { level: 9 } });
   const chunks = [];
 
   archive.on("data", (chunk) => chunks.push(Buffer.from(chunk)));

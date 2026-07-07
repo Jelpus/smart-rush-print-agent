@@ -1,6 +1,5 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { ZipArchive } = require("archiver");
 const QRCode = require("qrcode");
 const { createClient } = require("@supabase/supabase-js");
 const { config } = require("../src/config");
@@ -230,6 +229,7 @@ function copyFile(source, target) {
 }
 
 async function zipDirectory({ sourceDir, zipPath }) {
+  const { ZipArchive } = await import("archiver");
   fs.mkdirSync(path.dirname(zipPath), { recursive: true });
   fs.rmSync(zipPath, { force: true });
 

@@ -1,4 +1,3 @@
-const archiver = require("archiver");
 const QRCode = require("qrcode");
 const { createClient } = require("@supabase/supabase-js");
 const { config } = require("../config");
@@ -275,7 +274,8 @@ function clientReadme({ includeApk }) {
 }
 
 async function zipToBuffer(buildArchive) {
-  const archive = archiver("zip", { zlib: { level: 9 } });
+  const { ZipArchive } = await import("archiver");
+  const archive = new ZipArchive({ zlib: { level: 9 } });
   const chunks = [];
 
   archive.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
