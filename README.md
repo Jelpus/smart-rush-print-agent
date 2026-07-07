@@ -100,7 +100,7 @@ El QR vence por defecto en 30 minutos y solo puede activarse una vez. Tras escan
 
 ## API de distribucion en Vercel
 
-Este repo tambien puede desplegarse en Vercel como API interna para que SmartRush genere QRs y paquetes Android sin abrir el package builder local.
+Este repo tambien puede desplegarse en Vercel como API interna para que SmartRush genere QRs y paquetes Android, Windows y macOS sin abrir el package builder local.
 
 Variables necesarias en Vercel:
 
@@ -164,6 +164,7 @@ Endpoints:
 ```http
 POST /api/android/qr
 POST /api/android/package
+POST /api/desktop/package
 GET  /api/android/latest
 GET  /api/agents/status
 POST /api/agents/status
@@ -206,6 +207,22 @@ Authorization: Bearer ...
 ```
 
 Este endpoint descarga el APK desde la ultima release activa de `print_agent_releases` y devuelve un ZIP con APK + QR + README. Para produccion, el backend de SmartRush debe llamar estos endpoints server-to-server; el navegador no debe conocer `PRINT_SERVICE_INTERNAL_TOKEN`.
+
+Descargar paquete desktop ZIP:
+
+```http
+POST /api/desktop/package
+Content-Type: application/json
+Authorization: Bearer ...
+
+{
+  "tenant_id": "TENANT_UUID",
+  "branch_id": "BRANCH_UUID",
+  "platform": "windows"
+}
+```
+
+Usa `"platform": "macos"` para macOS. Este endpoint crea un agente permanente con `create_print_agent`, embebe su token en `SmartRushPrintAgent/.env.locale` y devuelve un ZIP con los instaladores del sistema elegido. El ZIP contiene scripts de instalar, probar conexion y desinstalar.
 
 ## branch_printers.connection
 

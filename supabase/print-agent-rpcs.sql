@@ -112,6 +112,7 @@ $$;
 revoke all on function public.create_print_agent(uuid, uuid, text, text) from public;
 revoke all on function public.create_print_agent(uuid, uuid, text, text) from anon;
 revoke all on function public.create_print_agent(uuid, uuid, text, text) from authenticated;
+grant execute on function public.create_print_agent(uuid, uuid, text, text) to service_role;
 
 create or replace function public._print_agent_from_token(
   p_agent_token text

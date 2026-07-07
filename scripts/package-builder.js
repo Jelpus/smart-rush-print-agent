@@ -165,6 +165,7 @@ function writeRuntimePackageJson(appDir) {
       "@supabase/supabase-js": packageJson.dependencies["@supabase/supabase-js"],
       dotenv: packageJson.dependencies.dotenv,
       "iconv-lite": packageJson.dependencies["iconv-lite"],
+      pngjs: packageJson.dependencies.pngjs,
       tar: packageJson.dependencies.tar,
     },
   };
