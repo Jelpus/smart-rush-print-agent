@@ -67,6 +67,61 @@ test("renders a SmartRush sales ticket payload", () => {
   assert.equal(text.includes("Total"), true);
 });
 
+test("formats receipt dates with the branch timezone", () => {
+  const buffer = renderTicket({
+    receipt_number: "T-TZ",
+    issued_at: "2026-06-27T02:43:00Z",
+    business: { display_name: "Memena" },
+    branch: { name: "Santiago de Surco", timezone: "America/Lima" },
+    payment: { total: 0, currency: "PEN" },
+    lines: [],
+  });
+
+  const text = buffer.toString("latin1");
+  assert.equal(text.includes("21:43"), true);
+  assert.equal(text.includes("02:43"), false);
+});
+
+test("does not print string null values in receipt fields", () => {
+  const buffer = renderTicket({
+    receipt_number: "T-CLEAN",
+    issued_at: "2026-06-27T02:43:00Z",
+    business: { display_name: "Memena" },
+    branch: { timezone: "America/Lima" },
+    order: { code: "null", sale_by_label: "Sala" },
+    billing: { name: "null", vat: "null" },
+    payment: { total: 12, currency: "PEN" },
+    lines: [{ quantity: 1, name: "Yucas Fritas", unit_price: 12, line_total: 12, notes: "null" }],
+  });
+
+  const text = buffer.toString("latin1").toLowerCase();
+  assert.equal(text.includes("null"), false);
+});
+
+test("renders a logo for receipts but not prep tickets", () => {
+  const logo = Buffer.from("LOGO-BYTES\n", "latin1");
+  const receipt = renderTicket(
+    {
+      receipt_number: "T-LOGO",
+      business: { display_name: "Memena" },
+      payment: { total: 0, currency: "PEN" },
+      lines: [],
+    },
+    { logo },
+  );
+  const prep = renderTicket(
+    {
+      type: "prep_ticket",
+      title: "BAR",
+      lines: [{ quantity: 1, name: "Limonada" }],
+    },
+    { jobType: "bar_ticket", logo },
+  );
+
+  assert.equal(receipt.toString("latin1").includes("LOGO-BYTES"), true);
+  assert.equal(prep.toString("latin1").includes("LOGO-BYTES"), false);
+});
+
 test("renders a detailed SmartRush pre-ticket payload", () => {
   const buffer = renderTicket({
     document_kind: "pre_ticket",

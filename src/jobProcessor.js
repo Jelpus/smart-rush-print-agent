@@ -3,6 +3,7 @@ const logger = require("./logger");
 const { printRawCups, printRawNetwork, printRawWindowsSpooler } = require("./printerClient");
 const { resolvePrinter } = require("./printerDiscovery");
 const { getPrinterForJob } = require("./printerRepository");
+const { loadTicketLogo, logoUrlForPayload } = require("./logoRenderer");
 const { renderTicket } = require("./ticketRenderer");
 
 async function claimPrintJobs(supabase) {
@@ -40,7 +41,20 @@ async function markFailedOrRetry(supabase, job, errorMessage) {
 async function processJob(supabase, job) {
   try {
     const branchPrinter = await getPrinterForJob(supabase, job);
-    const ticket = renderTicket(job.payload, { jobType: job.job_type });
+    const renderOptions = { jobType: job.job_type };
+    const logoUrl = logoUrlForPayload(job.payload);
+    if (logoUrl) {
+      try {
+        renderOptions.logo = await loadTicketLogo(job.payload, renderOptions);
+      } catch (error) {
+        logger.warn("Ticket logo skipped", {
+          id: job.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const ticket = renderTicket(job.payload, renderOptions);
     const connection = branchPrinter.connection || {};
     const connectionType = connection.type || "network";
     let printedTo = branchPrinter.name || connectionType;

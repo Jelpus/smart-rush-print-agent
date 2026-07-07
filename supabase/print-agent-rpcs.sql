@@ -221,6 +221,94 @@ $$;
 
 grant execute on function public.get_print_agent_config(text) to anon, authenticated;
 
+create or replace function public._enrich_print_job_payload(
+  p_payload jsonb,
+  p_branch_id uuid,
+  p_tenant_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_payload jsonb;
+  v_branch_payload jsonb;
+  v_business_payload jsonb;
+  v_branch record;
+  v_settings record;
+begin
+  if p_payload is null or jsonb_typeof(p_payload) <> 'object' then
+    return p_payload;
+  end if;
+
+  v_payload := p_payload;
+  v_branch_payload := case
+    when jsonb_typeof(v_payload->'branch') = 'object' then v_payload->'branch'
+    else '{}'::jsonb
+  end;
+  v_business_payload := case
+    when jsonb_typeof(v_payload->'business') = 'object' then v_payload->'business'
+    else '{}'::jsonb
+  end;
+
+  select
+    b.name,
+    b.address,
+    b.city,
+    b.country,
+    b.timezone
+  into v_branch
+  from public.branches b
+  where b.id = p_branch_id
+    and b.tenant_id = p_tenant_id;
+
+  select
+    s.brand_logo_url,
+    s.billing_email,
+    s.billing_tax_name,
+    s.billing_tax_id,
+    s.billing_address,
+    s.global_currency
+  into v_settings
+  from public.tenant_business_settings s
+  where s.tenant_id = p_tenant_id;
+
+  return v_payload
+    || jsonb_build_object(
+      'branch',
+      v_branch_payload || jsonb_strip_nulls(jsonb_build_object(
+        'name', v_branch.name,
+        'address', v_branch.address,
+        'city', v_branch.city,
+        'country', v_branch.country,
+        'timezone', v_branch.timezone
+      ))
+    )
+    || jsonb_build_object(
+      'business',
+      v_business_payload || jsonb_strip_nulls(jsonb_build_object(
+        'brand_logo_url', v_settings.brand_logo_url,
+        'billing_email', v_settings.billing_email,
+        'billing_tax_name', v_settings.billing_tax_name,
+        'billing_tax_id', v_settings.billing_tax_id,
+        'billing_address', v_settings.billing_address
+      ))
+    )
+    || jsonb_build_object(
+      'tenant_business_settings',
+      jsonb_strip_nulls(jsonb_build_object(
+        'brand_logo_url', v_settings.brand_logo_url,
+        'global_currency', v_settings.global_currency
+      ))
+    );
+end;
+$$;
+
+revoke all on function public._enrich_print_job_payload(jsonb, uuid, uuid) from public;
+revoke all on function public._enrich_print_job_payload(jsonb, uuid, uuid) from anon;
+revoke all on function public._enrich_print_job_payload(jsonb, uuid, uuid) from authenticated;
+
 create or replace function public.claim_print_jobs_for_agent(
   p_agent_token text,
   p_agent_name text default null,
@@ -248,6 +336,7 @@ begin
   update public.print_jobs j
   set
     status = 'printing',
+    payload = public._enrich_print_job_payload(j.payload, v_agent.branch_id, v_agent.tenant_id),
     locked_by = v_agent.id::text,
     locked_at = now(),
     locked_until = now() + interval '2 minutes',

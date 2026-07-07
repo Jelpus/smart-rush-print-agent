@@ -90,6 +90,73 @@ El ZIP contiene:
 
 El QR vence por defecto en 30 minutos y solo puede activarse una vez. Tras escanearlo, Android queda pausado por seguridad. Solo reclama trabajos cuando el usuario pulsa `Agente pausado - activar`; puede detenerse con `Agente activo - pausar`.
 
+## API de distribucion en Vercel
+
+Este repo tambien puede desplegarse en Vercel como API interna para que SmartRush genere QRs y paquetes Android sin abrir el package builder local.
+
+Variables necesarias en Vercel:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+PRINT_SERVICE_INTERNAL_TOKEN=long-random-token
+PRINT_SERVICE_ALLOWED_ORIGIN=https://app.smartrush.io
+ANDROID_APK_URL=https://print.smartrush.io/android/SmartRush-Print-Agent-Android.apk
+ANDROID_UPDATE_MANIFEST_URL=https://print.smartrush.io/android/update.json
+ANDROID_VERSION_CODE=4
+ANDROID_VERSION_NAME=0.4.0
+ANDROID_RELEASE_NOTES=Detector de actualizaciones integrado.
+```
+
+Endpoints:
+
+```http
+POST /api/android/qr
+POST /api/android/package
+GET  /api/android/latest
+GET  /api/agents/status
+POST /api/agents/status
+```
+
+Todos salvo `/api/android/latest` requieren:
+
+```http
+Authorization: Bearer PRINT_SERVICE_INTERNAL_TOKEN
+```
+
+Crear QR de activacion:
+
+```http
+POST /api/android/qr
+Content-Type: application/json
+Authorization: Bearer ...
+
+{
+  "tenant_id": "TENANT_UUID",
+  "branch_id": "BRANCH_UUID",
+  "expires_minutes": 30
+}
+```
+
+Respuesta: metadata de activacion, `qrDataUrl`, `qrText` y HTML imprimible. Tambien soporta `?format=png` y `?format=html`.
+
+Descargar paquete Android ZIP:
+
+```http
+POST /api/android/package
+Content-Type: application/json
+Authorization: Bearer ...
+
+{
+  "tenant_id": "TENANT_UUID",
+  "branch_id": "BRANCH_UUID",
+  "expires_minutes": 30
+}
+```
+
+Este endpoint descarga el APK desde `ANDROID_APK_URL` y devuelve un ZIP con APK + QR + README. Para produccion, el backend de SmartRush debe llamar estos endpoints server-to-server; el navegador no debe conocer `PRINT_SERVICE_INTERNAL_TOKEN`.
+
 ## branch_printers.connection
 
 Ejemplo recomendado:

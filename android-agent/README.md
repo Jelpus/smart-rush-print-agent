@@ -19,6 +19,33 @@ El APK debug queda en:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+## Actualizaciones
+
+La app consulta un manifiesto JSON para detectar versiones nuevas. Por defecto usa:
+
+```text
+https://raw.githubusercontent.com/Jelpus/smart-rush-print-agent/main/android-agent/update.json
+```
+
+Tambien puedes pasar otra URL en los QR nuevos con:
+
+```powershell
+$env:ANDROID_UPDATE_MANIFEST_URL = 'https://tu-dominio/update.json'
+```
+
+Formato del manifiesto:
+
+```json
+{
+  "versionCode": 5,
+  "versionName": "0.5.0",
+  "apkUrl": "https://tu-dominio/SmartRush-Print-Agent-Android.apk",
+  "releaseNotes": "Cambios de la version."
+}
+```
+
+Android siempre pedira confirmacion del usuario para instalar el APK. El APK nuevo debe tener `versionCode` mayor y estar firmado con la misma llave.
+
 ## Instalar por USB
 
 Con el movil en depuracion USB:

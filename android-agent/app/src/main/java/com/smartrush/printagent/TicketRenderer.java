@@ -1,24 +1,36 @@
 package com.smartrush.printagent;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.util.Base64;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Currency;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 final class TicketRenderer {
     private static final int ESC = 0x1B;
     private static final int GS = 0x1D;
     private static final int WIDTH = 32;
     private static final int FEED_LINES_BEFORE_CUT = 6;
+    private static final int MAX_LOGO_WIDTH = 192;
+    private static final int MAX_LOGO_HEIGHT = 96;
+    private static final Map<String, byte[]> LOGO_CACHE = new ConcurrentHashMap<>();
 
     private TicketRenderer() {
     }
@@ -79,6 +91,7 @@ final class TicketRenderer {
         ByteArrayOutputStream out = startTicket();
         JSONObject order = payload.optJSONObject("order");
         if (order == null) order = new JSONObject();
+        String timeZone = payloadTimeZone(payload);
 
         String title = firstNonEmpty(
                 payload.optString("title", ""),
@@ -93,11 +106,12 @@ final class TicketRenderer {
         center(out, "*****");
         divider(out);
 
-        if (!order.optString("table_label", "").isEmpty()) bold(out, "MESA: " + order.optString("table_label"));
-        if (order.has("guests_count")) line(out, twoColumns("Personas", order.optString("guests_count")));
-        if (!order.optString("sale_by", "").isEmpty()) line(out, twoColumns("Canal", order.optString("sale_by")));
-        if (!order.optString("actor_name", "").isEmpty()) line(out, twoColumns("Enviado por", order.optString("actor_name")));
-        if (!payload.optString("issued_at", "").isEmpty()) line(out, twoColumns("Hora", formatDate(payload.optString("issued_at"))));
+        String tableLabel = firstNonEmpty(order.optString("table_label", ""));
+        if (!tableLabel.isEmpty()) bold(out, "MESA: " + tableLabel);
+        if (!cleanText(order.opt("guests_count")).isEmpty()) line(out, twoColumns("Personas", cleanText(order.opt("guests_count"))));
+        if (!firstNonEmpty(order.optString("sale_by", "")).isEmpty()) line(out, twoColumns("Canal", order.optString("sale_by")));
+        if (!firstNonEmpty(order.optString("actor_name", "")).isEmpty()) line(out, twoColumns("Enviado por", order.optString("actor_name")));
+        if (!firstNonEmpty(payload.optString("issued_at", "")).isEmpty()) line(out, twoColumns("Hora", formatDate(payload.optString("issued_at"), timeZone)));
 
         divider(out);
 
@@ -106,7 +120,7 @@ final class TicketRenderer {
             for (int index = 0; index < lines.length(); index += 1) {
                 JSONObject item = lines.optJSONObject(index);
                 if (item == null) continue;
-                String quantity = item.optString("quantity", "1");
+                String quantity = firstNonEmpty(item.optString("quantity", ""), "1");
                 String name = firstNonEmpty(item.optString("name", ""), item.optString("text", ""));
                 bold(out, quantity + " x " + name);
 
@@ -141,6 +155,7 @@ final class TicketRenderer {
 
     private static byte[] renderPreTicket(JSONObject payload) throws Exception {
         ByteArrayOutputStream out = startTicket();
+        writeLogoIfPresent(out, payload);
         JSONObject business = payload.optJSONObject("business");
         JSONObject tenant = payload.optJSONObject("tenant");
         JSONObject order = payload.optJSONObject("order");
@@ -157,52 +172,55 @@ final class TicketRenderer {
                 "SmartRush"
         );
         String currency = payment != null ? payment.optString("currency", "") : "";
+        String timeZone = payloadTimeZone(payload);
 
         center(out, businessName);
-        if (order != null && !order.optString("table_label", "").isEmpty()) {
-            center(out, "Mesa " + order.optString("table_label"));
+        if (order != null && !firstNonEmpty(order.optString("table_label", "")).isEmpty()) {
+            center(out, "Mesa " + firstNonEmpty(order.optString("table_label", "")));
         }
         center(out, "PRE-TICKET");
-        if (!payload.optString("receipt_number", "").isEmpty()) center(out, payload.optString("receipt_number"));
-        divider(out);
+        if (!firstNonEmpty(payload.optString("receipt_number", "")).isEmpty()) center(out, firstNonEmpty(payload.optString("receipt_number", "")));
+        contentDivider(out);
 
-        if (!payload.optString("issued_at", "").isEmpty()) line(out, twoColumns("Fecha", formatDate(payload.optString("issued_at"))));
-        if (order != null && !order.optString("code", "").isEmpty()) line(out, twoColumns("Orden", order.optString("code")));
-        if (order != null && !order.optString("sale_by_label", "").isEmpty()) line(out, twoColumns("Canal", order.optString("sale_by_label")));
-        if (order != null && !order.optString("table_label", "").isEmpty()) line(out, twoColumns("Mesa", order.optString("table_label")));
-        if (!payload.optString("cashier", "").isEmpty()) line(out, twoColumns("Atendido por", payload.optString("cashier")));
+        if (!firstNonEmpty(payload.optString("issued_at", "")).isEmpty()) contentLine(out, twoColumns("Fecha", formatDate(payload.optString("issued_at"), timeZone)));
+        if (order != null && !firstNonEmpty(order.optString("code", "")).isEmpty()) contentLine(out, twoColumns("Orden", order.optString("code")));
+        if (order != null && !firstNonEmpty(order.optString("sale_by_label", "")).isEmpty()) contentLine(out, twoColumns("Canal", order.optString("sale_by_label")));
+        if (order != null && !firstNonEmpty(order.optString("table_label", "")).isEmpty()) contentLine(out, twoColumns("Mesa", order.optString("table_label")));
+        if (!firstNonEmpty(payload.optString("cashier", "")).isEmpty()) contentLine(out, twoColumns("Atendido por", payload.optString("cashier")));
 
         JSONArray sections = preTicket.optJSONArray("sections");
         if (sections != null) {
             for (int sectionIndex = 0; sectionIndex < sections.length(); sectionIndex += 1) {
                 JSONObject section = sections.optJSONObject(sectionIndex);
                 if (section == null) continue;
-                divider(out);
-                bold(out, twoColumns(section.optString("label", "Detalle").toUpperCase(Locale.ROOT), money(section.opt("total"), currency)));
+                contentDivider(out);
+                String label = firstNonEmpty(section.optString("label", ""), section.optString("key", ""), "Detalle");
+                contentBold(out, twoColumns(label.toUpperCase(Locale.ROOT), money(section.opt("total"), currency)));
                 JSONArray items = section.optJSONArray("items");
                 if (items == null || items.length() == 0) {
-                    line(out, "  Sin items");
+                    contentLine(out, "  Sin items");
                     continue;
                 }
                 for (int itemIndex = 0; itemIndex < items.length(); itemIndex += 1) {
                     JSONObject item = items.optJSONObject(itemIndex);
                     if (item == null) continue;
-                    String quantity = item.optString("quantity", "1");
+                    String quantity = firstNonEmpty(item.optString("quantity", ""), "1");
                     String name = firstNonEmpty(item.optString("name", ""), item.optString("text", ""));
-                    line(out, twoColumns(quantity + " x " + name, money(item.opt("line_total"), currency)));
-                    if (item.has("unit_price")) line(out, twoColumns("  Unitario", money(item.opt("unit_price"), currency)));
-                    if (item.has("paid_amount")) line(out, twoColumns("  Pagado", money(item.opt("paid_amount"), currency)));
-                    if (item.has("outstanding_amount")) line(out, twoColumns("  Pendiente", money(item.opt("outstanding_amount"), currency)));
-                    if (!item.optString("notes", "").isEmpty()) line(out, "  Nota: " + item.optString("notes"));
-                    line(out, "");
+                    contentLine(out, twoColumns(quantity + " x " + name, money(item.opt("line_total"), currency)));
+                    if (item.has("unit_price")) contentLine(out, twoColumns("  Unitario", money(item.opt("unit_price"), currency)));
+                    if (item.has("paid_amount")) contentLine(out, twoColumns("  Pagado", money(item.opt("paid_amount"), currency)));
+                    if (item.has("outstanding_amount")) contentLine(out, twoColumns("  Pendiente", money(item.opt("outstanding_amount"), currency)));
+                    String note = firstNonEmpty(item.optString("notes", ""));
+                    if (!note.isEmpty()) contentLine(out, "  Nota: " + note);
+                    contentLine(out, "");
                 }
             }
         }
 
-        divider(out);
-        if (summary.has("total_account")) line(out, twoColumns("Total cuenta", money(summary.opt("total_account"), currency)));
-        if (summary.has("total_paid")) line(out, twoColumns("Total pagado", money(summary.opt("total_paid"), currency)));
-        if (summary.has("total_due")) bold(out, twoColumns("Total por pagar", money(summary.opt("total_due"), currency)));
+        contentDivider(out);
+        if (summary.has("total_account")) contentLine(out, twoColumns("Total cuenta", money(summary.opt("total_account"), currency)));
+        if (summary.has("total_paid")) contentLine(out, twoColumns("Total pagado", money(summary.opt("total_paid"), currency)));
+        if (summary.has("total_due")) contentBold(out, twoColumns("Total por pagar", money(summary.opt("total_due"), currency)));
         center(out, firstNonEmpty(payload.optString("footer", ""), "Documento no fiscal"));
         center(out, "Sistema automatizado por Smart Rush");
         finishTicket(out);
@@ -211,6 +229,7 @@ final class TicketRenderer {
 
     private static byte[] renderSmartRushTicket(JSONObject payload) throws Exception {
         ByteArrayOutputStream out = startTicket();
+        writeLogoIfPresent(out, payload);
         JSONObject business = payload.optJSONObject("business");
         JSONObject tenant = payload.optJSONObject("tenant");
         JSONObject branch = payload.optJSONObject("branch");
@@ -226,57 +245,59 @@ final class TicketRenderer {
         );
         String currency = payment != null ? payment.optString("currency", "") : "";
         String receiptLabel = "invoice".equals(payload.optString("receipt_type")) ? "Factura" : "Ticket";
+        String timeZone = payloadTimeZone(payload);
 
         center(out, businessName);
-        if (branch != null && !branch.optString("name", "").isEmpty() && !branch.optString("name").equals(businessName)) {
-            center(out, branch.optString("name"));
+        if (branch != null && !firstNonEmpty(branch.optString("name", "")).isEmpty() && !firstNonEmpty(branch.optString("name", "")).equals(businessName)) {
+            center(out, firstNonEmpty(branch.optString("name", "")));
         }
-        if (business != null && !business.optString("billing_tax_id", "").isEmpty()) center(out, "NIF/VAT: " + business.optString("billing_tax_id"));
-        if (!payload.optString("receipt_number", "").isEmpty()) center(out, receiptLabel + " " + payload.optString("receipt_number"));
-        divider(out);
+        if (business != null && !firstNonEmpty(business.optString("billing_tax_id", "")).isEmpty()) center(out, "NIF/VAT: " + firstNonEmpty(business.optString("billing_tax_id", "")));
+        if (!firstNonEmpty(payload.optString("receipt_number", "")).isEmpty()) center(out, receiptLabel + " " + firstNonEmpty(payload.optString("receipt_number", "")));
+        contentDivider(out);
 
-        if (!payload.optString("issued_at", "").isEmpty()) line(out, twoColumns("Fecha", formatDate(payload.optString("issued_at"))));
-        if (order != null && !order.optString("code", "").isEmpty()) line(out, twoColumns("Orden", order.optString("code")));
-        else if (!payload.optString("order_id", "").isEmpty()) line(out, twoColumns("Orden", shortId(payload.optString("order_id"))));
-        if (order != null && !order.optString("sale_by_label", "").isEmpty()) line(out, twoColumns("Canal", order.optString("sale_by_label")));
-        if (order != null && !order.optString("table_label", "").isEmpty()) line(out, "Mesa: " + order.optString("table_label"));
-        if (!payload.optString("cashier", "").isEmpty()) line(out, twoColumns("Atendido por", payload.optString("cashier")));
+        if (!firstNonEmpty(payload.optString("issued_at", "")).isEmpty()) contentLine(out, twoColumns("Fecha", formatDate(payload.optString("issued_at"), timeZone)));
+        if (order != null && !firstNonEmpty(order.optString("code", "")).isEmpty()) contentLine(out, twoColumns("Orden", order.optString("code")));
+        else if (!firstNonEmpty(payload.optString("order_id", "")).isEmpty()) contentLine(out, twoColumns("Orden", shortId(payload.optString("order_id"))));
+        if (order != null && !firstNonEmpty(order.optString("sale_by_label", "")).isEmpty()) contentLine(out, twoColumns("Canal", order.optString("sale_by_label")));
+        if (order != null && !firstNonEmpty(order.optString("table_label", "")).isEmpty()) contentLine(out, "Mesa: " + firstNonEmpty(order.optString("table_label", "")));
+        if (!firstNonEmpty(payload.optString("cashier", "")).isEmpty()) contentLine(out, twoColumns("Atendido por", payload.optString("cashier")));
 
-        if (billing != null && !billing.optString("name", "").isEmpty()) {
-            divider(out);
-            line(out, twoColumns("Cliente", billing.optString("name")));
-            if (!billing.optString("vat", "").isEmpty()) line(out, twoColumns("VAT/NIF", billing.optString("vat")));
+        if (billing != null && !firstNonEmpty(billing.optString("name", "")).isEmpty()) {
+            contentDivider(out);
+            contentLine(out, twoColumns("Cliente", billing.optString("name")));
+            if (!firstNonEmpty(billing.optString("vat", "")).isEmpty()) contentLine(out, twoColumns("VAT/NIF", billing.optString("vat")));
         }
 
-        divider(out);
+        contentDivider(out);
         JSONArray lines = payload.optJSONArray("lines");
         if (lines != null) {
             for (int index = 0; index < lines.length(); index += 1) {
                 JSONObject item = lines.optJSONObject(index);
                 if (item == null) continue;
-                String quantity = item.optString("quantity", "1");
+                String quantity = firstNonEmpty(item.optString("quantity", ""), "1");
                 String name = firstNonEmpty(item.optString("name", ""), item.optString("text", ""));
                 Object totalValue = firstPresent(item, "paid_amount", "line_total", "total", "price");
                 Object unitValue = firstPresent(item, "unit_price", "price");
-                line(out, twoColumns(name, money(totalValue, currency)));
-                line(out, "  " + quantity + " x " + money(unitValue, currency)
-                        + (!item.optString("notes", "").isEmpty() ? " - " + item.optString("notes") : ""));
+                String note = firstNonEmpty(item.optString("notes", ""));
+                contentLine(out, twoColumns(name, money(totalValue, currency)));
+                contentLine(out, "  " + quantity + " x " + money(unitValue, currency)
+                        + (!note.isEmpty() ? " - " + note : ""));
             }
         }
 
         if (payment != null) {
-            divider(out);
-            if (payment.has("subtotal")) line(out, twoColumns("Subtotal", money(payment.opt("subtotal"), currency)));
-            if (number(payment.opt("discount")) > 0) line(out, twoColumns("Descuento", "-" + money(payment.opt("discount"), currency)));
-            if (number(payment.opt("tip")) > 0) line(out, twoColumns("Propina", money(payment.opt("tip"), currency)));
-            if (payment.has("total")) bold(out, twoColumns("Total", money(payment.opt("total"), currency)));
+            contentDivider(out);
+            if (payment.has("subtotal")) contentLine(out, twoColumns("Subtotal", money(payment.opt("subtotal"), currency)));
+            if (number(payment.opt("discount")) > 0) contentLine(out, twoColumns("Descuento", "-" + money(payment.opt("discount"), currency)));
+            if (number(payment.opt("tip")) > 0) contentLine(out, twoColumns("Propina", money(payment.opt("tip"), currency)));
+            if (payment.has("total")) contentBold(out, twoColumns("Total", money(payment.opt("total"), currency)));
             String method = firstNonEmpty(payment.optString("method_label", ""), payment.optString("method", ""));
-            if (!method.isEmpty()) line(out, twoColumns("Metodo", method));
-            if (payment.has("cash_received")) line(out, twoColumns("Recibido", money(payment.opt("cash_received"), currency)));
-            if (payment.has("change_due")) line(out, twoColumns("Cambio", money(payment.opt("change_due"), currency)));
+            if (!method.isEmpty()) contentLine(out, twoColumns("Metodo", method));
+            if (payment.has("cash_received")) contentLine(out, twoColumns("Recibido", money(payment.opt("cash_received"), currency)));
+            if (payment.has("change_due")) contentLine(out, twoColumns("Cambio", money(payment.opt("change_due"), currency)));
         }
 
-        divider(out);
+        contentDivider(out);
         center(out, firstNonEmpty(payload.optString("footer", ""), "Gracias por su compra."));
         center(out, "Sistema automatizado por Smart Rush");
         center(out, "www.smartrush.io");
@@ -376,6 +397,145 @@ final class TicketRenderer {
         line(out, "--------------------------------");
     }
 
+    private static void contentLine(ByteArrayOutputStream out, String text) throws Exception {
+        command(out, ESC, 0x61, 0x01);
+        line(out, contentBlockText(text));
+        command(out, ESC, 0x61, 0x00);
+    }
+
+    private static void contentBold(ByteArrayOutputStream out, String text) throws Exception {
+        command(out, ESC, 0x61, 0x01);
+        command(out, ESC, 0x45, 0x01);
+        line(out, contentBlockText(text));
+        command(out, ESC, 0x45, 0x00);
+        command(out, ESC, 0x61, 0x00);
+    }
+
+    private static void contentDivider(ByteArrayOutputStream out) throws Exception {
+        contentLine(out, repeat("-", WIDTH));
+    }
+
+    private static String contentBlockText(String value) {
+        String clean = cleanLineValue(value);
+        if (clean.length() >= WIDTH) return clean;
+        return clean + repeat(" ", WIDTH - clean.length());
+    }
+
+    private static void writeLogoIfPresent(ByteArrayOutputStream out, JSONObject payload) throws Exception {
+        String logoUrl = logoUrlForPayload(payload);
+        if (logoUrl.isEmpty()) return;
+
+        try {
+            byte[] logo = LOGO_CACHE.get(logoUrl);
+            if (logo == null) {
+                logo = downloadLogo(logoUrl);
+                if (logo != null) LOGO_CACHE.put(logoUrl, logo);
+            }
+            if (logo != null) {
+                out.write(logo);
+                line(out, "");
+            }
+        } catch (Exception ignored) {
+            // The logo is optional; printing must continue if the image cannot be fetched or decoded.
+        }
+    }
+
+    private static String logoUrlForPayload(JSONObject payload) {
+        JSONObject business = payload.optJSONObject("business");
+        JSONObject settings = payload.optJSONObject("tenant_business_settings");
+        return firstNonEmpty(
+                business != null ? business.optString("brand_logo_url", "") : "",
+                business != null ? business.optString("brandLogoUrl", "") : "",
+                settings != null ? settings.optString("brand_logo_url", "") : "",
+                settings != null ? settings.optString("brandLogoUrl", "") : "",
+                payload.optString("brand_logo_url", ""),
+                payload.optString("brandLogoUrl", "")
+        );
+    }
+
+    private static byte[] downloadLogo(String logoUrl) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(logoUrl).openConnection();
+        connection.setConnectTimeout(8000);
+        connection.setReadTimeout(8000);
+        connection.setInstanceFollowRedirects(true);
+
+        try {
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) return null;
+
+            try (InputStream input = connection.getInputStream()) {
+                Bitmap bitmap = BitmapFactory.decodeStream(input);
+                if (bitmap == null) return null;
+                return renderBitmapLogo(bitmap);
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static byte[] renderBitmapLogo(Bitmap bitmap) throws Exception {
+        int[] bounds = contentBounds(bitmap);
+        if (bounds == null) return null;
+
+        int sourceWidth = bounds[2] - bounds[0] + 1;
+        int sourceHeight = bounds[3] - bounds[1] + 1;
+        double scale = Math.min(1.0, Math.min((double) MAX_LOGO_WIDTH / sourceWidth, (double) MAX_LOGO_HEIGHT / sourceHeight));
+        int width = Math.max(1, (int) Math.round(sourceWidth * scale));
+        int height = Math.max(1, (int) Math.round(sourceHeight * scale));
+        int rowBytes = (int) Math.ceil(width / 8.0);
+        byte[] raster = new byte[rowBytes * height];
+
+        for (int y = 0; y < height; y += 1) {
+            int sourceY = bounds[1] + Math.min(sourceHeight - 1, (int) Math.floor(y / scale));
+            for (int x = 0; x < width; x += 1) {
+                int sourceX = bounds[0] + Math.min(sourceWidth - 1, (int) Math.floor(x / scale));
+                if (isInk(bitmap.getPixel(sourceX, sourceY), 190)) {
+                    raster[y * rowBytes + x / 8] |= (byte) (0x80 >> (x % 8));
+                }
+            }
+        }
+
+        ByteArrayOutputStream image = new ByteArrayOutputStream();
+        command(image, ESC, 0x61, 0x01);
+        command(image, GS, 0x76, 0x30, 0x00, rowBytes & 0xFF, (rowBytes >> 8) & 0xFF, height & 0xFF, (height >> 8) & 0xFF);
+        image.write(raster);
+        image.write('\n');
+        command(image, ESC, 0x61, 0x00);
+        return image.toByteArray();
+    }
+
+    private static int[] contentBounds(Bitmap bitmap) {
+        int left = bitmap.getWidth();
+        int right = -1;
+        int top = bitmap.getHeight();
+        int bottom = -1;
+
+        for (int y = 0; y < bitmap.getHeight(); y += 1) {
+            for (int x = 0; x < bitmap.getWidth(); x += 1) {
+                if (!isInk(bitmap.getPixel(x, y), 245)) continue;
+                left = Math.min(left, x);
+                right = Math.max(right, x);
+                top = Math.min(top, y);
+                bottom = Math.max(bottom, y);
+            }
+        }
+
+        if (right < left || bottom < top) return null;
+        return new int[] { left, top, right, bottom };
+    }
+
+    private static boolean isInk(int pixel, int threshold) {
+        int alpha = Color.alpha(pixel);
+        if (alpha < 32) return false;
+
+        double alphaRatio = alpha / 255.0;
+        double red = Color.red(pixel) * alphaRatio + 255 * (1 - alphaRatio);
+        double green = Color.green(pixel) * alphaRatio + 255 * (1 - alphaRatio);
+        double blue = Color.blue(pixel) * alphaRatio + 255 * (1 - alphaRatio);
+        double luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
+        return luminance < threshold;
+    }
+
     private static byte[] text(String value) {
         return String.valueOf(value).getBytes(printerCharset());
     }
@@ -391,8 +551,8 @@ final class TicketRenderer {
     }
 
     private static String twoColumns(String left, String right) {
-        String cleanLeft = left == null ? "" : left;
-        String cleanRight = right == null ? "" : right;
+        String cleanLeft = cleanLineValue(left);
+        String cleanRight = cleanLineValue(right);
         int spaces = Math.max(1, WIDTH - cleanLeft.length() - cleanRight.length());
         return cleanLeft + repeat(" ", spaces) + cleanRight;
     }
@@ -403,10 +563,29 @@ final class TicketRenderer {
         return builder.toString();
     }
 
+    private static String cleanText(Object value) {
+        if (value == null || value == JSONObject.NULL) return "";
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) return "";
+        String lower = text.toLowerCase(Locale.ROOT);
+        if ("null".equals(lower) || "undefined".equals(lower) || "nan".equals(lower)) return "";
+        return text;
+    }
+
+    private static String cleanLineValue(String value) {
+        if (value == null) return "";
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) return "";
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if ("null".equals(lower) || "undefined".equals(lower) || "nan".equals(lower)) return "";
+        return value;
+    }
+
     private static String money(Object value, String currencyCode) {
-        if (value == null || value == JSONObject.NULL || String.valueOf(value).isEmpty()) return "";
-        double amount = number(value);
-        if (Double.isNaN(amount)) return String.valueOf(value);
+        String raw = cleanText(value);
+        if (raw.isEmpty()) return "";
+        double amount = number(raw);
+        if (Double.isNaN(amount)) return raw;
         try {
             String code = normalizeCurrency(currencyCode);
             NumberFormat format = NumberFormat.getCurrencyInstance(new Locale("es"));
@@ -435,13 +614,42 @@ final class TicketRenderer {
         }
     }
 
-    private static String formatDate(String value) {
-        if (value == null || value.trim().isEmpty()) return "";
+    private static String formatDate(String value, String timeZone) {
+        String clean = cleanText(value);
+        if (clean.isEmpty()) return "";
         try {
-            return OffsetDateTime.parse(value).format(DateTimeFormatter.ofPattern("dd/MM/yy HH:mm"));
+            OffsetDateTime date = OffsetDateTime.parse(clean);
+            String zone = safeTimeZone(timeZone);
+            if (!zone.isEmpty()) {
+                return date.atZoneSameInstant(ZoneId.of(zone)).format(DateTimeFormatter.ofPattern("dd/MM/yy HH:mm"));
+            }
+            return date.format(DateTimeFormatter.ofPattern("dd/MM/yy HH:mm"));
         } catch (Exception ignored) {
-            return value;
+            return clean;
         }
+    }
+
+    private static String safeTimeZone(String value) {
+        String candidate = cleanText(value);
+        if ("Lima".equals(candidate) || "Peru".equals(candidate)) return "America/Lima";
+        if ("Barcelona".equals(candidate) || "Madrid".equals(candidate) || "Spain".equals(candidate)) {
+            return "Europe/Madrid";
+        }
+        if (candidate.isEmpty()) return "";
+        try {
+            ZoneId.of(candidate);
+            return candidate;
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String payloadTimeZone(JSONObject payload) {
+        JSONObject branch = payload.optJSONObject("branch");
+        return firstNonEmpty(
+                branch != null ? branch.optString("timezone", "") : "",
+                payload.optString("timezone", "")
+        );
     }
 
     private static String namesFromArray(JSONArray... arrays) {
@@ -473,7 +681,8 @@ final class TicketRenderer {
 
     private static String firstNonEmpty(String... values) {
         for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) return value.trim();
+            String clean = cleanText(value);
+            if (!clean.isEmpty()) return clean;
         }
         return "";
     }

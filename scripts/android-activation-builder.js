@@ -55,7 +55,7 @@ function formatDate(value) {
 }
 
 function buildActivationPayload(row) {
-  return {
+  const payload = {
     type: "smartrush-print-agent-activation",
     version: 1,
     platform: "android",
@@ -64,6 +64,13 @@ function buildActivationPayload(row) {
     activationId: row.activation_id,
     activationSecret: row.activation_secret,
   };
+  const updateManifestUrl = String(
+    process.env.ANDROID_UPDATE_MANIFEST_URL || process.env.UPDATE_MANIFEST_URL || "",
+  ).trim();
+  if (updateManifestUrl) {
+    payload.androidUpdateManifestUrl = updateManifestUrl;
+  }
+  return payload;
 }
 
 function buildHtml({ row, qrDataUrl }) {

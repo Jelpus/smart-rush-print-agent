@@ -2,15 +2,23 @@ package com.smartrush.printagent;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.DownloadManager;
 import android.content.SharedPreferences;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageInfo;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.net.Uri;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -60,6 +68,10 @@ public class MainActivity extends Activity {
     private static final String KEY_POLL_INTERVAL_MS = "pollIntervalMs";
     private static final String KEY_BATCH_SIZE = "batchSize";
     private static final String KEY_RETRY_DELAY_SECONDS = "retryDelaySeconds";
+    private static final String KEY_UPDATE_MANIFEST_URL = "updateManifestUrl";
+    private static final String KEY_LAST_UPDATE_CHECK_AT = "lastUpdateCheckAt";
+    private static final String KEY_LAST_UPDATE_PROMPT_VERSION_CODE = "lastUpdatePromptVersionCode";
+    private static final String DEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/Jelpus/smart-rush-print-agent/main/android-agent/update.json";
     private static final int DEFAULT_POLL_INTERVAL_MS = 5000;
     private static final int DEFAULT_BATCH_SIZE = 5;
     private static final int DEFAULT_RETRY_DELAY_SECONDS = 30;
@@ -70,6 +82,7 @@ public class MainActivity extends Activity {
     private static final int MIN_RETRY_DELAY_SECONDS = 1;
     private static final int MAX_RETRY_DELAY_SECONDS = 300;
     private static final long CONFIG_REFRESH_INTERVAL_MS = 60000L;
+    private static final long UPDATE_CHECK_INTERVAL_MS = 12L * 60L * 60L * 1000L;
 
     private SharedPreferences prefs;
     private Handler handler;
@@ -78,6 +91,7 @@ public class MainActivity extends Activity {
     private JSONArray lastPrinters;
     private boolean pollInFlight;
     private long lastConfigSyncAtMs;
+    private long pendingUpdateDownloadId = -1L;
 
     private final Runnable pollRunnable = new Runnable() {
         @Override
@@ -96,6 +110,7 @@ public class MainActivity extends Activity {
         requestNotificationPermissionIfNeeded();
         refreshStatus();
         syncPollingState();
+        maybeCheckForUpdates();
     }
 
     @Override
@@ -149,6 +164,7 @@ public class MainActivity extends Activity {
         root.addView(button("Escanear codigo QR", COLOR_BRAND, Color.WHITE, view -> scanQr()));
         root.addView(button("Ver impresoras", COLOR_DARK, Color.WHITE, view -> loadPrinters()));
         root.addView(button("Prueba impresion", COLOR_DARK, Color.WHITE, view -> testPrint()));
+        root.addView(button("Buscar actualizacion", COLOR_DARK, Color.WHITE, view -> checkForUpdatesFromButton()));
         root.addView(button("Borrar agente", COLOR_CARD, COLOR_DARK, view -> clearAgent(), COLOR_BORDER));
 
         setContentView(scrollView);
@@ -293,11 +309,29 @@ public class MainActivity extends Activity {
         }
 
         boolean nextEnabled = !prefs.getBoolean(KEY_AGENT_ENABLED, false);
-        prefs.edit().putBoolean(KEY_AGENT_ENABLED, nextEnabled).apply();
+        if (!nextEnabled) {
+            confirmPauseAgent();
+            return;
+        }
+
+        setAgentEnabled(true);
+    }
+
+    private void confirmPauseAgent() {
+        new AlertDialog.Builder(this)
+                .setTitle("Pausar agente")
+                .setMessage("Estas seguro que deseas pausar el agente? No reclamara trabajos hasta que lo actives de nuevo.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Pausar", (dialog, which) -> setAgentEnabled(false))
+                .show();
+    }
+
+    private void setAgentEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_AGENT_ENABLED, enabled).apply();
         updateAgentToggleButton();
         syncPollingState();
 
-        if (nextEnabled) {
+        if (enabled) {
             setStatus(agentSummary("Servicio activo en segundo plano."));
         } else {
             setStatus(agentSummary("No reclama trabajos."));
@@ -309,6 +343,272 @@ public class MainActivity extends Activity {
             PrintAgentService.start(this);
         } else {
             PrintAgentService.stop(this);
+        }
+    }
+
+    private void maybeCheckForUpdates() {
+        long now = System.currentTimeMillis();
+        long lastCheck = prefs.getLong(KEY_LAST_UPDATE_CHECK_AT, 0L);
+        if (lastCheck > 0 && now - lastCheck < UPDATE_CHECK_INTERVAL_MS) {
+            return;
+        }
+
+        prefs.edit().putLong(KEY_LAST_UPDATE_CHECK_AT, now).apply();
+        new Thread(() -> {
+            try {
+                UpdateInfo update = fetchUpdateInfo();
+                if (update != null && update.versionCode > currentVersionCode()) {
+                    int lastPrompted = prefs.getInt(KEY_LAST_UPDATE_PROMPT_VERSION_CODE, 0);
+                    if (lastPrompted < update.versionCode) {
+                        runOnUiThread(() -> showUpdateDialog(update, false));
+                    }
+                }
+            } catch (Exception ignored) {
+                // Silent checks should not interrupt printing or activation flows.
+            }
+        }).start();
+    }
+
+    private void checkForUpdatesFromButton() {
+        setStatus("Buscando actualizaciones...");
+        new Thread(() -> {
+            try {
+                UpdateInfo update = fetchUpdateInfo();
+                runOnUiThread(() -> handleUpdateCheckResult(update, true));
+            } catch (Exception error) {
+                runOnUiThread(() -> setStatus("No se pudo buscar actualizaciones: " + errorMessage(error)));
+            }
+        }).start();
+    }
+
+    private void handleUpdateCheckResult(UpdateInfo update, boolean manual) {
+        if (update == null) {
+            setStatus("No se encontro informacion de actualizacion.");
+            return;
+        }
+
+        int currentVersionCode = currentVersionCode();
+        if (update.versionCode <= currentVersionCode) {
+            if (manual) {
+                setStatus("Ya tienes la ultima version instalada (" + currentVersionName() + ").");
+            }
+            return;
+        }
+
+        setStatus("Actualizacion disponible: " + update.versionName);
+        showUpdateDialog(update, manual);
+    }
+
+    private UpdateInfo fetchUpdateInfo() throws Exception {
+        String manifestUrl = prefs.getString(KEY_UPDATE_MANIFEST_URL, DEFAULT_UPDATE_MANIFEST_URL);
+        JSONObject json = new JSONObject(getText(manifestUrl));
+        int versionCode = json.optInt("versionCode", json.optInt("version_code", 0));
+        String versionName = firstNonEmpty(
+                json.optString("versionName", ""),
+                json.optString("version_name", ""),
+                json.optString("tag_name", ""),
+                String.valueOf(versionCode)
+        );
+        String apkUrl = firstNonEmpty(
+                json.optString("apkUrl", ""),
+                json.optString("apk_url", ""),
+                json.optString("downloadUrl", ""),
+                json.optString("download_url", "")
+        );
+        String notes = firstNonEmpty(
+                json.optString("releaseNotes", ""),
+                json.optString("release_notes", ""),
+                json.optString("notes", ""),
+                json.optString("body", "")
+        );
+
+        JSONArray assets = json.optJSONArray("assets");
+        if (apkUrl.isEmpty() && assets != null) {
+            for (int index = 0; index < assets.length(); index += 1) {
+                JSONObject asset = assets.optJSONObject(index);
+                if (asset == null) continue;
+                String name = asset.optString("name", "").toLowerCase(Locale.ROOT);
+                String url = firstNonEmpty(asset.optString("browser_download_url", ""), asset.optString("downloadUrl", ""));
+                if (name.endsWith(".apk") && !url.isEmpty()) {
+                    apkUrl = url;
+                    break;
+                }
+            }
+        }
+
+        if (versionCode <= 0) {
+            throw new IllegalStateException("El manifiesto de actualizacion no tiene versionCode");
+        }
+
+        return new UpdateInfo(versionCode, versionName, apkUrl, notes);
+    }
+
+    private void showUpdateDialog(UpdateInfo update, boolean manual) {
+        prefs.edit().putInt(KEY_LAST_UPDATE_PROMPT_VERSION_CODE, update.versionCode).apply();
+        String message = "Version instalada: " + currentVersionName() + "\n"
+                + "Nueva version: " + update.versionName
+                + (update.notes.isEmpty() ? "" : "\n\n" + update.notes);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("Actualizacion disponible")
+                .setMessage(message)
+                .setNegativeButton("Luego", null);
+
+        if (!update.apkUrl.isEmpty()) {
+            builder.setPositiveButton("Descargar", (dialog, which) -> startUpdateDownload(update));
+        } else if (manual) {
+            builder.setPositiveButton("OK", null);
+        }
+
+        builder.show();
+    }
+
+    private void startUpdateDownload(UpdateInfo update) {
+        if (!canInstallPackages()) {
+            showInstallPermissionDialog();
+            return;
+        }
+
+        try {
+            DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            if (manager == null) {
+                throw new IllegalStateException("DownloadManager no esta disponible");
+            }
+
+            String fileName = "SmartRush-Print-Agent-" + update.versionName.replaceAll("[^A-Za-z0-9._-]", "_") + ".apk";
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(update.apkUrl))
+                    .setTitle("SmartRush Print Agent " + update.versionName)
+                    .setDescription("Descargando actualizacion")
+                    .setMimeType("application/vnd.android.package-archive")
+                    .setAllowedOverMetered(true)
+                    .setAllowedOverRoaming(true)
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, fileName);
+
+            pendingUpdateDownloadId = manager.enqueue(request);
+            setStatus("Descargando actualizacion " + update.versionName + "...");
+            pollUpdateDownload(pendingUpdateDownloadId);
+        } catch (Exception error) {
+            setStatus("No se pudo descargar la actualizacion: " + errorMessage(error));
+        }
+    }
+
+    private boolean canInstallPackages() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls();
+    }
+
+    private void showInstallPermissionDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Permiso requerido")
+                .setMessage("Para instalar actualizaciones, permite que SmartRush Print Agent instale apps desconocidas. Luego vuelve y pulsa Buscar actualizacion.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Abrir ajustes", (dialog, which) -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        Intent intent = new Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:" + getPackageName())
+                        );
+                        startActivity(intent);
+                    }
+                })
+                .show();
+    }
+
+    private void pollUpdateDownload(long downloadId) {
+        if (handler == null || downloadId <= 0) return;
+        handler.postDelayed(() -> checkUpdateDownload(downloadId), 1500);
+    }
+
+    private void checkUpdateDownload(long downloadId) {
+        DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+        if (manager == null) {
+            setStatus("No se pudo comprobar la descarga.");
+            return;
+        }
+
+        DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+        try (Cursor cursor = manager.query(query)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                pollUpdateDownload(downloadId);
+                return;
+            }
+
+            int statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+            int reasonIndex = cursor.getColumnIndex(DownloadManager.COLUMN_REASON);
+            int status = statusIndex >= 0 ? cursor.getInt(statusIndex) : 0;
+            int reason = reasonIndex >= 0 ? cursor.getInt(reasonIndex) : 0;
+
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                pendingUpdateDownloadId = -1L;
+                Uri apkUri = manager.getUriForDownloadedFile(downloadId);
+                if (apkUri == null) {
+                    setStatus("La descarga termino, pero Android no devolvio el archivo APK.");
+                    return;
+                }
+                installDownloadedApk(apkUri);
+            } else if (status == DownloadManager.STATUS_FAILED) {
+                pendingUpdateDownloadId = -1L;
+                setStatus("Fallo la descarga de la actualizacion. Codigo: " + reason);
+            } else {
+                pollUpdateDownload(downloadId);
+            }
+        }
+    }
+
+    private void installDownloadedApk(Uri apkUri) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            setStatus("Abriendo instalador de Android...");
+        } catch (Exception error) {
+            setStatus("No se pudo abrir el instalador: " + errorMessage(error));
+        }
+    }
+
+    private String getText(String urlValue) throws Exception {
+        URL url = new URL(urlValue);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(20000);
+        connection.setRequestMethod("GET");
+        connection.setRequestProperty("Accept", "application/json");
+        connection.setRequestProperty("User-Agent", "SmartRush-Android-Agent");
+
+        int code = connection.getResponseCode();
+        InputStream input = code >= 200 && code < 300
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+        String response = readAll(input);
+        connection.disconnect();
+
+        if (code < 200 || code >= 300) {
+            throw new IllegalStateException("HTTP " + code + ": " + response);
+        }
+
+        return response;
+    }
+
+    private int currentVersionCode() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return (int) info.getLongVersionCode();
+            }
+            return info.versionCode;
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private String currentVersionName() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return firstNonEmpty(info.versionName, String.valueOf(currentVersionCode()));
+        } catch (Exception ignored) {
+            return String.valueOf(currentVersionCode());
         }
     }
 
@@ -391,6 +691,11 @@ public class MainActivity extends Activity {
                     .putString(KEY_AGENT_ID, row.getString("agent_id"))
                     .putString(KEY_AGENT_TOKEN, row.getString("agent_token"))
                     .putString(KEY_BRANCH_NAME, row.optString("branch_name", row.optString("branch_id")))
+                    .putString(KEY_UPDATE_MANIFEST_URL, firstNonEmpty(
+                            payload.optString("androidUpdateManifestUrl", ""),
+                            payload.optString("updateManifestUrl", ""),
+                            prefs.getString(KEY_UPDATE_MANIFEST_URL, DEFAULT_UPDATE_MANIFEST_URL)
+                    ))
                     .putInt(KEY_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS)
                     .putInt(KEY_BATCH_SIZE, DEFAULT_BATCH_SIZE)
                     .putInt(KEY_RETRY_DELAY_SECONDS, DEFAULT_RETRY_DELAY_SECONDS)
@@ -725,6 +1030,20 @@ public class MainActivity extends Activity {
     }
 
     private void clearAgent() {
+        if (prefs.getString(KEY_AGENT_TOKEN, "").isEmpty()) {
+            doClearAgent();
+            return;
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Eliminar agente")
+                .setMessage("Estas seguro que deseas eliminar este agente? Tendras que escanear un QR para volver a activarlo.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Eliminar", (dialog, which) -> doClearAgent())
+                .show();
+    }
+
+    private void doClearAgent() {
         if (handler != null) {
             handler.removeCallbacks(pollRunnable);
         }
@@ -813,6 +1132,24 @@ public class MainActivity extends Activity {
     private String shortId(String value) {
         if (value == null) return "";
         return value.length() <= 8 ? value : value.substring(0, 8);
+    }
+
+    private String errorMessage(Exception error) {
+        return error.getMessage() == null ? String.valueOf(error) : error.getMessage();
+    }
+
+    private static final class UpdateInfo {
+        final int versionCode;
+        final String versionName;
+        final String apkUrl;
+        final String notes;
+
+        UpdateInfo(int versionCode, String versionName, String apkUrl, String notes) {
+            this.versionCode = versionCode;
+            this.versionName = versionName;
+            this.apkUrl = apkUrl;
+            this.notes = notes;
+        }
     }
 
     private interface Worker {

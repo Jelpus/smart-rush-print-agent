@@ -3,6 +3,8 @@ const { config } = require("./config");
 
 const ESC = 0x1b;
 const GS = 0x1d;
+const WIDTH = 32;
+const BLANK_STRINGS = new Set(["null", "undefined", "nan"]);
 
 function command(...bytes) {
   return Buffer.from(bytes);
@@ -18,6 +20,29 @@ function line(text = "") {
 
 function feed(lines) {
   return Buffer.from("\n".repeat(Math.max(0, lines)));
+}
+
+function cleanText(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  return BLANK_STRINGS.has(text.toLowerCase()) ? "" : text;
+}
+
+function cleanLineValue(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value);
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  return BLANK_STRINGS.has(trimmed.toLowerCase()) ? "" : text;
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    const text = cleanText(value);
+    if (text) return text;
+  }
+  return "";
 }
 
 function center(text) {
@@ -37,7 +62,34 @@ function doubleSize(text) {
 }
 
 function divider() {
-  return line("--------------------------------");
+  return line("-".repeat(WIDTH));
+}
+
+function contentBlockText(text = "") {
+  const clean = cleanLineValue(text);
+  return clean.length >= WIDTH ? clean : clean.padEnd(WIDTH, " ");
+}
+
+function contentLine(text = "") {
+  return centerRaw(line(contentBlockText(text)));
+}
+
+function contentBold(text = "") {
+  return centerRaw(
+    Buffer.concat([
+      command(ESC, 0x45, 0x01),
+      line(contentBlockText(text)),
+      command(ESC, 0x45, 0x00),
+    ]),
+  );
+}
+
+function contentDivider() {
+  return contentLine("-".repeat(WIDTH));
+}
+
+function logoBlock(options = {}) {
+  return options.logo ? Buffer.concat([options.logo, feed(1)]) : null;
 }
 
 function normalizeCurrency(value) {
@@ -49,23 +101,24 @@ function normalizeCurrency(value) {
 }
 
 function money(value, currency) {
-  if (value === null || value === undefined || value === "") return "";
+  const raw = cleanText(value);
+  if (!raw) return "";
   try {
     return new Intl.NumberFormat("es", {
       style: "currency",
       currency: normalizeCurrency(currency),
     })
-      .format(Number(value))
+      .format(Number(raw))
       .replace(/\u00a0/g, " ");
   } catch {
-    const number = Number(value);
-    const amount = Number.isFinite(number) ? number.toFixed(2) : String(value);
+    const number = Number(raw);
+    const amount = Number.isFinite(number) ? number.toFixed(2) : raw;
     return currency ? `${amount} ${currency}` : amount;
   }
 }
 
 function safeTimeZone(value) {
-  const candidate = String(value || "").trim();
+  const candidate = cleanText(value);
   if (candidate === "Lima" || candidate === "Peru") return "America/Lima";
   if (candidate === "Barcelona" || candidate === "Madrid" || candidate === "Spain") {
     return "Europe/Madrid";
@@ -80,9 +133,10 @@ function safeTimeZone(value) {
 }
 
 function formatDate(value, timeZone) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
+  const raw = cleanText(value);
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
   return new Intl.DateTimeFormat("es", {
     dateStyle: "short",
     timeStyle: "short",
@@ -93,10 +147,14 @@ function formatDate(value, timeZone) {
 }
 
 function twoColumns(left, right, width = 32) {
-  const cleanLeft = String(left || "");
-  const cleanRight = String(right || "");
+  const cleanLeft = cleanLineValue(left);
+  const cleanRight = cleanLineValue(right);
   const space = Math.max(1, width - cleanLeft.length - cleanRight.length);
   return `${cleanLeft}${" ".repeat(space)}${cleanRight}`;
+}
+
+function payloadTimeZone(payload) {
+  return firstText(payload.branch?.timezone, payload.timezone);
 }
 
 function isPreTicket(payload) {
@@ -125,7 +183,8 @@ function cleanList(values) {
     if (typeof value === "string") label = value;
     else if (value && typeof value === "object") label = value.name || value.label || value.title || "";
 
-    const normalized = label.trim().toLowerCase();
+    label = cleanText(label);
+    const normalized = label.toLowerCase();
     if (!label || seen.has(normalized)) continue;
     seen.add(normalized);
     result.push(label);
@@ -149,9 +208,9 @@ function mergeLists(...lists) {
 
 function prepLineDetails(item) {
   const details = [];
+  const variantLabel = firstText(item.variant_label, item.selected_variant?.name);
 
-  if (item.variant_label) details.push(`Variante: ${item.variant_label}`);
-  else if (item.selected_variant?.name) details.push(`Variante: ${item.selected_variant.name}`);
+  if (variantLabel) details.push(`Variante: ${variantLabel}`);
 
   const extras = mergeLists(item.extras_labels, item.selected_extras);
   if (extras.length > 0) details.push(`Extras: ${extras.join(", ")}`);
@@ -159,7 +218,7 @@ function prepLineDetails(item) {
   const combos = mergeLists(item.combo_labels, item.combo_selections);
   if (combos.length > 0) details.push(`Combo: ${combos.join(", ")}`);
 
-  const note = item.note_label || item.notes;
+  const note = firstText(item.note_label, item.notes);
   if (note) details.push(`Nota: ${note}`);
 
   if (item.sent_at) details.push(`Enviado: ${formatDate(item.sent_at, item.timezone)}`);
@@ -169,26 +228,28 @@ function prepLineDetails(item) {
 
 function renderPrepTicket(payload) {
   const parts = [command(ESC, 0x40)];
-  const title = payload.title || payload.printer?.role?.toUpperCase() || "COMANDA";
+  const title = firstText(payload.title, payload.printer?.role?.toUpperCase()) || "COMANDA";
   const order = payload.order || {};
+  const timeZone = payloadTimeZone(payload);
 
   parts.push(center("*****"));
   parts.push(centerRaw(doubleSize(title)));
   parts.push(center("*****"));
   parts.push(divider());
 
-  if (order.table_label) parts.push(bold(`MESA: ${order.table_label}`));
-  if (order.guests_count) parts.push(line(twoColumns("Personas", order.guests_count)));
-  if (order.sale_by) parts.push(line(twoColumns("Canal", order.sale_by)));
-  if (order.actor_name) parts.push(line(twoColumns("Enviado por", order.actor_name)));
-  if (payload.issued_at) parts.push(line(twoColumns("Hora", formatDate(payload.issued_at, payload.branch?.timezone))));
+  const tableLabel = firstText(order.table_label);
+  if (tableLabel) parts.push(bold(`MESA: ${tableLabel}`));
+  if (firstText(order.guests_count)) parts.push(line(twoColumns("Personas", order.guests_count)));
+  if (firstText(order.sale_by)) parts.push(line(twoColumns("Canal", order.sale_by)));
+  if (firstText(order.actor_name)) parts.push(line(twoColumns("Enviado por", order.actor_name)));
+  if (firstText(payload.issued_at)) parts.push(line(twoColumns("Hora", formatDate(payload.issued_at, timeZone))));
 
   parts.push(divider());
 
   const lines = Array.isArray(payload.lines) ? payload.lines : [];
   for (const item of lines) {
-    const quantity = item.quantity || 1;
-    const name = item.name || item.text || "";
+    const quantity = firstText(item.quantity) || 1;
+    const name = firstText(item.name, item.text);
     parts.push(bold(`${quantity} x ${name}`));
     for (const detail of prepLineDetails(item)) {
       parts.push(line(`  - ${detail}`));
@@ -197,7 +258,8 @@ function renderPrepTicket(payload) {
   }
 
   parts.push(divider());
-  if (payload.printer?.name) parts.push(center(payload.printer.name));
+  const printerName = firstText(payload.printer?.name);
+  if (printerName) parts.push(center(printerName));
   parts.push(feed(config.feedLinesBeforeCut));
 
   if (config.cutAfterPrint) {
@@ -209,22 +271,24 @@ function renderPrepTicket(payload) {
 
 function modifierLine(modifier, currency) {
   if (!modifier || typeof modifier !== "object") return "";
-  const label = modifier.label || modifier.type || "Opcion";
-  const value = modifier.value || modifier.name || modifier.title || "";
+  const label = firstText(modifier.label, modifier.type);
+  const value = firstText(modifier.value, modifier.name, modifier.title);
   const amount =
     modifier.amount !== null && modifier.amount !== undefined && Number(modifier.amount) !== 0
       ? ` (${money(modifier.amount, currency)})`
       : "";
-  return [label, value].filter(Boolean).join(": ") + amount;
+  if (!value && !amount) return "";
+  return [label || "Opcion", value].filter(Boolean).join(": ") + amount;
 }
 
 function hasPositiveAmount(value) {
   return Number(value || 0) > 0;
 }
 
-function renderPreTicket(payload) {
+function renderPreTicket(payload, options = {}) {
   const parts = [command(ESC, 0x40)];
-  const businessName = payload.business?.display_name || payload.tenant?.name || payload.title || "SmartRush";
+  const logo = logoBlock(options);
+  const businessName = firstText(payload.business?.display_name, payload.tenant?.name, payload.title) || "SmartRush";
   const preTicket = payload.pre_ticket || {};
   const summary = preTicket.summary || {};
   const sections = Array.isArray(preTicket.sections) ? preTicket.sections : [];
@@ -234,90 +298,98 @@ function renderPreTicket(payload) {
       ? preTicket.applied_promotions
       : [];
   const currency = payload.payment?.currency;
+  const timeZone = payloadTimeZone(payload);
   const hasPayments = Boolean(summary.has_payments) || hasPositiveAmount(summary.total_paid);
   const hasDiscounts = discounts.length > 0 || hasPositiveAmount(summary.total_discounts);
 
+  if (logo) parts.push(logo);
   parts.push(center(businessName));
-  if (payload.order?.table_label) parts.push(center(`Mesa ${payload.order.table_label}`));
+  const tableLabel = firstText(payload.order?.table_label);
+  if (tableLabel) parts.push(center(`Mesa ${tableLabel}`));
   parts.push(center("PRE-TICKET"));
-  if (payload.receipt_number) parts.push(center(payload.receipt_number));
-  parts.push(divider());
+  const receiptNumber = firstText(payload.receipt_number);
+  if (receiptNumber) parts.push(center(receiptNumber));
+  parts.push(contentDivider());
 
-  if (payload.issued_at) parts.push(line(twoColumns("Fecha", formatDate(payload.issued_at, payload.branch?.timezone))));
-  if (payload.order?.code || payload.order_id) {
-    parts.push(line(twoColumns("Orden", payload.order?.code || String(payload.order_id).slice(0, 8))));
-  }
-  if (payload.order?.sale_by_label) parts.push(line(twoColumns("Canal", payload.order.sale_by_label)));
-  if (payload.order?.guests_count) parts.push(line(twoColumns("Personas", payload.order.guests_count)));
-  if (payload.cashier) parts.push(line(twoColumns("Atendido por", payload.cashier)));
+  if (firstText(payload.issued_at)) parts.push(contentLine(twoColumns("Fecha", formatDate(payload.issued_at, timeZone))));
+  const orderCode = firstText(
+    payload.order?.code,
+    payload.order_id !== undefined && payload.order_id !== null ? String(payload.order_id).slice(0, 8) : "",
+  );
+  if (orderCode) parts.push(contentLine(twoColumns("Orden", orderCode)));
+  if (firstText(payload.order?.sale_by_label)) parts.push(contentLine(twoColumns("Canal", payload.order.sale_by_label)));
+  if (firstText(payload.order?.guests_count)) parts.push(contentLine(twoColumns("Personas", payload.order.guests_count)));
+  if (firstText(payload.cashier)) parts.push(contentLine(twoColumns("Atendido por", payload.cashier)));
 
   for (const section of sections) {
     const items = Array.isArray(section.items) ? section.items : [];
-    const label = section.label || section.key || "Detalle";
-    parts.push(divider());
-    parts.push(bold(twoColumns(label.toUpperCase(), money(section.total || 0, currency))));
+    const label = firstText(section.label, section.key) || "Detalle";
+    parts.push(contentDivider());
+    parts.push(contentBold(twoColumns(label.toUpperCase(), money(section.total ?? 0, currency))));
 
     if (items.length === 0) {
-      parts.push(line("  Sin items"));
+      parts.push(contentLine("  Sin items"));
       continue;
     }
 
     for (const item of items) {
-      const quantity = item.quantity || 1;
-      const name = item.name || item.text || "";
-      parts.push(line(twoColumns(`${quantity} x ${name}`, money(item.line_total, currency))));
-      parts.push(line(twoColumns("  Unitario", money(item.unit_price, currency))));
-      if (item.status_label) parts.push(line(twoColumns("  Estado", item.status_label)));
-      parts.push(line(twoColumns("  Pagado", money(item.paid_amount || 0, currency))));
+      const quantity = firstText(item.quantity) || 1;
+      const name = firstText(item.name, item.text);
+      parts.push(contentLine(twoColumns(`${quantity} x ${name}`, money(item.line_total, currency))));
+      parts.push(contentLine(twoColumns("  Unitario", money(item.unit_price, currency))));
+      if (firstText(item.status_label)) parts.push(contentLine(twoColumns("  Estado", item.status_label)));
+      parts.push(contentLine(twoColumns("  Pagado", money(item.paid_amount || 0, currency))));
       if (hasPositiveAmount(item.discount_amount)) {
-        parts.push(line(twoColumns("  Descuento", `-${money(item.discount_amount, currency)}`)));
+        parts.push(contentLine(twoColumns("  Descuento", `-${money(item.discount_amount, currency)}`)));
       }
-      parts.push(line(twoColumns("  Pendiente", money(item.outstanding_amount || 0, currency))));
+      parts.push(contentLine(twoColumns("  Pendiente", money(item.outstanding_amount || 0, currency))));
 
       const modifiers = Array.isArray(item.modifiers) ? item.modifiers : [];
       for (const modifier of modifiers) {
         const detail = modifierLine(modifier, currency);
-        if (detail) parts.push(line(`  - ${detail}`));
+        if (detail) parts.push(contentLine(`  - ${detail}`));
       }
 
-      if (item.notes) parts.push(line(`  Nota: ${item.notes}`));
-      parts.push(line());
+      const note = firstText(item.notes);
+      if (note) parts.push(contentLine(`  Nota: ${note}`));
+      parts.push(contentLine());
     }
   }
 
   if (hasDiscounts) {
-    parts.push(divider());
-    parts.push(bold("DESCUENTOS / PROMOS"));
+    parts.push(contentDivider());
+    parts.push(contentBold("DESCUENTOS / PROMOS"));
     if (discounts.length === 0) {
-      parts.push(line(twoColumns("Descuentos aplicados", `-${money(summary.total_discounts || 0, currency)}`)));
+      parts.push(contentLine(twoColumns("Descuentos aplicados", `-${money(summary.total_discounts || 0, currency)}`)));
     } else {
       for (const discount of discounts) {
-        const name = discount.name || discount.description || "Descuento";
+        const name = firstText(discount.name, discount.description) || "Descuento";
         const amount = discount.amount ?? discount.discount;
-        parts.push(line(twoColumns(name, `-${money(amount, currency)}`)));
-        if (discount.description && discount.description !== name) {
-          parts.push(line(`  ${discount.description}`));
+        parts.push(contentLine(twoColumns(name, `-${money(amount, currency)}`)));
+        const description = firstText(discount.description);
+        if (description && description !== name) {
+          parts.push(contentLine(`  ${description}`));
         }
       }
     }
   }
 
-  parts.push(divider());
+  parts.push(contentDivider());
   if (!hasPayments && !hasDiscounts) {
-    parts.push(bold(twoColumns("Total cuenta", money(summary.total_account, currency))));
+    parts.push(contentBold(twoColumns("Total cuenta", money(summary.total_account, currency))));
   } else {
-    parts.push(line(twoColumns("Total cuenta", money(summary.total_account, currency))));
+    parts.push(contentLine(twoColumns("Total cuenta", money(summary.total_account, currency))));
     if (hasDiscounts) {
-      parts.push(line(twoColumns("Total descuentos", `-${money(summary.total_discounts || 0, currency)}`)));
+      parts.push(contentLine(twoColumns("Total descuentos", `-${money(summary.total_discounts || 0, currency)}`)));
     }
     if (hasPayments) {
-      parts.push(line(twoColumns("Total pagado", money(summary.total_paid || 0, currency))));
+      parts.push(contentLine(twoColumns("Total pagado", money(summary.total_paid || 0, currency))));
     }
-    parts.push(bold(twoColumns("Total por pagar", money(summary.total_due, currency))));
+    parts.push(contentBold(twoColumns("Total por pagar", money(summary.total_due, currency))));
   }
 
-  parts.push(divider());
-  parts.push(center(payload.footer || "Documento no fiscal"));
+  parts.push(contentDivider());
+  parts.push(center(firstText(payload.footer) || "Documento no fiscal"));
   parts.push(center("Sistema automatizado por Smart Rush"));
   parts.push(center("www.smartrush.io"));
   parts.push(feed(config.feedLinesBeforeCut));
@@ -329,87 +401,102 @@ function renderPreTicket(payload) {
   return Buffer.concat(parts);
 }
 
-function renderSmartRushTicket(payload) {
+function renderSmartRushTicket(payload, options = {}) {
   const parts = [command(ESC, 0x40)];
-  const businessName = payload.business?.display_name || payload.tenant?.name || payload.title || "SmartRush";
-  const branchName = payload.branch?.name;
+  const logo = logoBlock(options);
+  const businessName = firstText(payload.business?.display_name, payload.tenant?.name, payload.title) || "SmartRush";
+  const branchName = firstText(payload.branch?.name);
   const address = [payload.branch?.address, payload.branch?.city, payload.branch?.country]
+    .map(cleanText)
     .filter(Boolean)
     .join(" - ");
   const currency = payload.payment?.currency;
   const receiptLabel = payload.receipt_type === "invoice" ? "Factura" : "Ticket";
+  const timeZone = payloadTimeZone(payload);
 
+  if (logo) parts.push(logo);
   parts.push(center(businessName));
   if (branchName && branchName !== businessName) parts.push(center(branchName));
-  if (payload.business?.billing_tax_name && payload.business.billing_tax_name !== businessName) {
-    parts.push(center(`Razon social: ${payload.business.billing_tax_name}`));
+  const billingTaxName = firstText(payload.business?.billing_tax_name);
+  if (billingTaxName && billingTaxName !== businessName) {
+    parts.push(center(`Razon social: ${billingTaxName}`));
   }
   if (address) parts.push(center(address));
-  if (payload.business?.billing_tax_id) parts.push(center(`NIF/VAT: ${payload.business.billing_tax_id}`));
-  if (payload.business?.billing_address) parts.push(center(payload.business.billing_address));
-  if (payload.business?.billing_email) parts.push(center(payload.business.billing_email));
-  if (payload.receipt_number) parts.push(center(`${receiptLabel} ${payload.receipt_number}`));
-  parts.push(divider());
+  const billingTaxId = firstText(payload.business?.billing_tax_id);
+  if (billingTaxId) parts.push(center(`NIF/VAT: ${billingTaxId}`));
+  const billingAddress = firstText(payload.business?.billing_address);
+  if (billingAddress) parts.push(center(billingAddress));
+  const billingEmail = firstText(payload.business?.billing_email);
+  if (billingEmail) parts.push(center(billingEmail));
+  const receiptNumber = firstText(payload.receipt_number);
+  if (receiptNumber) parts.push(center(`${receiptLabel} ${receiptNumber}`));
+  parts.push(contentDivider());
 
-  if (payload.issued_at) parts.push(line(twoColumns("Fecha", formatDate(payload.issued_at, payload.branch?.timezone))));
-  if (payload.order?.code || payload.order_id) {
-    parts.push(line(twoColumns("Orden", payload.order?.code || String(payload.order_id).slice(0, 8))));
+  if (firstText(payload.issued_at)) parts.push(contentLine(twoColumns("Fecha", formatDate(payload.issued_at, timeZone))));
+  const orderCode = firstText(
+    payload.order?.code,
+    payload.order_id !== undefined && payload.order_id !== null ? String(payload.order_id).slice(0, 8) : "",
+  );
+  if (orderCode) parts.push(contentLine(twoColumns("Orden", orderCode)));
+  if (firstText(payload.order?.sale_by_label)) parts.push(contentLine(twoColumns("Canal", payload.order.sale_by_label)));
+  const tableLabel = firstText(payload.order?.table_label);
+  if (tableLabel) parts.push(contentLine(`Mesa: ${tableLabel}`));
+  if (firstText(payload.cashier)) parts.push(contentLine(twoColumns("Atendido por", payload.cashier)));
+
+  if (firstText(payload.billing?.name)) {
+    parts.push(contentDivider());
+    parts.push(contentLine(twoColumns("Cliente", payload.billing.name)));
+    if (firstText(payload.billing.vat)) parts.push(contentLine(twoColumns("VAT/NIF", payload.billing.vat)));
+    if (firstText(payload.billing.address)) parts.push(contentLine(twoColumns("Direccion", payload.billing.address)));
+    if (firstText(payload.billing.email)) parts.push(contentLine(twoColumns("Email", payload.billing.email)));
   }
-  if (payload.order?.sale_by_label) parts.push(line(twoColumns("Canal", payload.order.sale_by_label)));
-  if (payload.order?.table_label) parts.push(line(`Mesa: ${payload.order.table_label}`));
-  if (payload.cashier) parts.push(line(twoColumns("Atendido por", payload.cashier)));
 
-  if (payload.billing?.name) {
-    parts.push(divider());
-    parts.push(line(twoColumns("Cliente", payload.billing.name)));
-    if (payload.billing.vat) parts.push(line(twoColumns("VAT/NIF", payload.billing.vat)));
-    if (payload.billing.address) parts.push(line(twoColumns("Direccion", payload.billing.address)));
-    if (payload.billing.email) parts.push(line(twoColumns("Email", payload.billing.email)));
-  }
-
-  parts.push(divider());
+  parts.push(contentDivider());
 
   const lines = Array.isArray(payload.lines) ? payload.lines : [];
   for (const item of lines) {
-    const quantity = item.quantity || 1;
-    const name = item.name || item.text || "";
+    const quantity = firstText(item.quantity) || 1;
+    const name = firstText(item.name, item.text);
     const total = money(item.paid_amount ?? item.line_total ?? item.total ?? item.price, currency);
     const unitPrice = money(item.unit_price ?? item.price, currency);
-    parts.push(line(twoColumns(name, total)));
-    parts.push(line(`  ${quantity} x ${unitPrice}${item.notes ? ` - ${item.notes}` : ""}`));
+    const note = firstText(item.notes);
+    parts.push(contentLine(twoColumns(name, total)));
+    parts.push(contentLine(`  ${quantity} x ${unitPrice}${note ? ` - ${note}` : ""}`));
   }
 
-  parts.push(divider());
+  parts.push(contentDivider());
   if (payload.payment?.subtotal !== undefined) {
-    parts.push(line(twoColumns("Subtotal", money(payload.payment.subtotal, currency))));
+    parts.push(contentLine(twoColumns("Subtotal", money(payload.payment.subtotal, currency))));
   }
   if (payload.payment?.discount) {
-    parts.push(line(twoColumns("Descuento", `-${money(payload.payment.discount, currency)}`)));
+    parts.push(contentLine(twoColumns("Descuento", `-${money(payload.payment.discount, currency)}`)));
   }
   if (payload.payment?.tip) {
-    parts.push(line(twoColumns("Propina", money(payload.payment.tip, currency))));
+    parts.push(contentLine(twoColumns("Propina", money(payload.payment.tip, currency))));
   }
   if (payload.payment?.total !== undefined) {
-    parts.push(bold(twoColumns("Total", money(payload.payment.total, currency))));
+    parts.push(contentBold(twoColumns("Total", money(payload.payment.total, currency))));
   }
-  if (payload.payment?.method_label || payload.payment?.method) {
-    parts.push(line(twoColumns("Metodo", payload.payment.method_label || payload.payment.method)));
+  const paymentMethod = firstText(payload.payment?.method_label, payload.payment?.method);
+  if (paymentMethod) {
+    parts.push(contentLine(twoColumns("Metodo", paymentMethod)));
   }
   if (payload.payment?.cash_received !== undefined) {
-    parts.push(line(twoColumns("Recibido", money(payload.payment.cash_received, currency))));
+    parts.push(contentLine(twoColumns("Recibido", money(payload.payment.cash_received, currency))));
   }
   if (payload.payment?.change_due !== undefined) {
-    parts.push(line(twoColumns("Cambio", money(payload.payment.change_due, currency))));
+    parts.push(contentLine(twoColumns("Cambio", money(payload.payment.change_due, currency))));
   }
-  if (payload.payment?.reference) {
-    parts.push(line(twoColumns("Referencia", payload.payment.reference)));
+  if (firstText(payload.payment?.reference)) {
+    parts.push(contentLine(twoColumns("Referencia", payload.payment.reference)));
   }
 
-  parts.push(divider());
-  parts.push(center(payload.footer || "Gracias por su compra."));
+  parts.push(contentDivider());
+  parts.push(center(firstText(payload.footer) || "Gracias por su compra."));
   parts.push(center("Sistema automatizado por Smart Rush"));
   parts.push(center("www.smartrush.io"));
-  if (payload.payment_id) parts.push(line(`Pago: ${payload.payment_id}`));
+  const paymentId = firstText(payload.payment_id);
+  if (paymentId) parts.push(contentLine(`Pago: ${paymentId}`));
   parts.push(feed(config.feedLinesBeforeCut));
 
   if (config.cutAfterPrint) {
@@ -490,7 +577,7 @@ function renderTicket(payload, options = {}) {
   }
 
   if (isPreTicket(payload)) {
-    return renderPreTicket(payload);
+    return renderPreTicket(payload, options);
   }
 
   if (isPrepTicket(payload, options)) {
@@ -498,7 +585,7 @@ function renderTicket(payload, options = {}) {
   }
 
   if (isSmartRushTicket(payload)) {
-    return renderSmartRushTicket(payload);
+    return renderSmartRushTicket(payload, options);
   }
 
   return renderStructuredTicket(payload);
