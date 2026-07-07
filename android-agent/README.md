@@ -21,10 +21,10 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Actualizaciones
 
-La app consulta un manifiesto JSON para detectar versiones nuevas. Por defecto usa:
+La app consulta un manifiesto JSON para detectar versiones nuevas. En produccion debe apuntar al endpoint de Vercel:
 
 ```text
-https://raw.githubusercontent.com/Jelpus/smart-rush-print-agent/main/android-agent/update.json
+https://print.smartrush.io/android/update.json
 ```
 
 Tambien puedes pasar otra URL en los QR nuevos con:
@@ -43,6 +43,8 @@ Formato del manifiesto:
   "releaseNotes": "Cambios de la version."
 }
 ```
+
+En Vercel ese manifiesto se genera desde la tabla `public.print_agent_releases` de Supabase. Para publicar una version nueva, inserta una fila con `versionCode` mayor y `apkUrl` publico.
 
 Android siempre pedira confirmacion del usuario para instalar el APK. El APK nuevo debe tener `versionCode` mayor y estar firmado con la misma llave.
 

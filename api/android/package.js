@@ -23,6 +23,7 @@ module.exports = async function handler(request, response) {
       agentName: body.agent_name || body.agentName,
       agentCode: body.agent_code || body.agentCode,
       expiresMinutes: body.expires_minutes || body.expiresMinutes,
+      channel: body.channel,
     });
 
     response.statusCode = 200;

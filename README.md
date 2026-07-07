@@ -63,6 +63,14 @@ La app Android debe ser unica. En vez de compilar una app distinta por sucursal,
 
 Antes de generar paquetes Android, aplica `supabase/print-agent-activations.sql` en Supabase. En la maquina interna necesitas `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` y `SUPABASE_ANON_KEY` en `.env.locale`.
 
+Para actualizaciones Android desde Vercel, aplica tambien:
+
+```sql
+-- Supabase SQL Editor
+-- copia y ejecuta el contenido completo de:
+-- supabase/print-agent-releases.sql
+```
+
 El cliente no instala Android Studio ni Android SDK. Solo instala el APK.
 
 Genera el paquete Android por CLI:
@@ -102,12 +110,54 @@ SUPABASE_ANON_KEY=your-supabase-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 PRINT_SERVICE_INTERNAL_TOKEN=long-random-token
 PRINT_SERVICE_ALLOWED_ORIGIN=https://app.smartrush.io
-ANDROID_APK_URL=https://print.smartrush.io/android/SmartRush-Print-Agent-Android.apk
 ANDROID_UPDATE_MANIFEST_URL=https://print.smartrush.io/android/update.json
-ANDROID_VERSION_CODE=4
-ANDROID_VERSION_NAME=0.4.0
-ANDROID_RELEASE_NOTES=Detector de actualizaciones integrado.
+ANDROID_RELEASE_CHANNEL=stable
 ```
+
+La version publicada del APK no se configura normalmente en Vercel. Se lee desde Supabase:
+
+```sql
+insert into public.print_agent_releases (
+  platform,
+  channel,
+  version_code,
+  version_name,
+  apk_url,
+  release_notes
+)
+values (
+  'android',
+  'stable',
+  4,
+  '0.4.0',
+  'https://print.smartrush.io/android/SmartRush-Print-Agent-Android.apk',
+  'Detector de actualizaciones integrado.'
+);
+```
+
+Para una nueva version, sube el APK a una URL publica estable y agrega otra fila con `version_code` mayor. No hace falta redeploy ni cambiar variables de Vercel.
+
+Tambien puedes publicar el APK y registrar la release desde este repo. Requisitos:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- bucket de Supabase Storage llamado `apk`, publico
+- tabla `public.print_agent_releases` creada
+
+Compila el APK y publica la release:
+
+```powershell
+cd android-agent
+$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:ANDROID_SDK_ROOT = "$env:LOCALAPPDATA\Android\Sdk"
+.\gradlew.bat assembleDebug
+cd ..
+
+node scripts/publish-android-release.js --notes "Cambios de la version."
+```
+
+El script lee `versionCode` y `versionName` desde `android-agent/app/build.gradle.kts`, sube `app-debug.apk` al bucket `apk`, obtiene la URL publica y hace `upsert` en `print_agent_releases`.
 
 Endpoints:
 
@@ -155,7 +205,7 @@ Authorization: Bearer ...
 }
 ```
 
-Este endpoint descarga el APK desde `ANDROID_APK_URL` y devuelve un ZIP con APK + QR + README. Para produccion, el backend de SmartRush debe llamar estos endpoints server-to-server; el navegador no debe conocer `PRINT_SERVICE_INTERNAL_TOKEN`.
+Este endpoint descarga el APK desde la ultima release activa de `print_agent_releases` y devuelve un ZIP con APK + QR + README. Para produccion, el backend de SmartRush debe llamar estos endpoints server-to-server; el navegador no debe conocer `PRINT_SERVICE_INTERNAL_TOKEN`.
 
 ## branch_printers.connection
 

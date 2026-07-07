@@ -3,6 +3,7 @@ const QRCode = require("qrcode");
 const { createClient } = require("@supabase/supabase-js");
 const { config } = require("../config");
 const { httpError } = require("./http");
+const { getLatestAndroidRelease } = require("./androidReleases");
 
 function requireActivationConfig() {
   if (!config.supabaseUrl) throw httpError(500, "missing_supabase_url", "SUPABASE_URL is not configured");
@@ -293,9 +294,10 @@ async function zipToBuffer(buildArchive) {
 
 async function buildAndroidPackage(input) {
   const activation = await createAndroidActivation(input);
-  const apkUrl = cleanString(process.env.ANDROID_APK_URL);
+  const release = await getLatestAndroidRelease({ channel: input?.channel });
+  const apkUrl = cleanString(release.apkUrl || process.env.ANDROID_APK_URL);
   if (!apkUrl) {
-    throw httpError(500, "missing_android_apk_url", "ANDROID_APK_URL is required for package downloads");
+    throw httpError(500, "missing_android_apk_url", "No Android APK URL is configured in Supabase release metadata");
   }
 
   const apk = await fetchBuffer(apkUrl);
@@ -309,6 +311,7 @@ async function buildAndroidPackage(input) {
 
   return {
     activation,
+    release,
     fileName: `${activation.branch.id}-android.zip`,
     zip,
   };

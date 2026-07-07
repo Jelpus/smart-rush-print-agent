@@ -12,6 +12,7 @@
     "build-package": "node scripts/build-package.js",
     "build-android-activation": "node scripts/build-android-activation.js",
     "build-android-package": "node scripts/build-android-package.js",
+    "publish-android-release": "node scripts/publish-android-release.js",
     "test": "node --test"
   },
   "keywords": [],
