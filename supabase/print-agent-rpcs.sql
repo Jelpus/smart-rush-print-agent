@@ -8,6 +8,7 @@ create table if not exists public.print_agents (
 
   name text not null,
   agent_code text,
+  platform text,
   token_hash text not null unique,
   is_active boolean not null default true,
 
@@ -19,6 +20,7 @@ create table if not exists public.print_agents (
 );
 
 alter table public.print_agents
+  add column if not exists platform text,
   add column if not exists poll_interval_ms int not null default 5000,
   add column if not exists batch_size int not null default 5,
   add column if not exists retry_delay_seconds int not null default 30;
@@ -53,18 +55,67 @@ exception
 end;
 $$;
 
+do $$
+begin
+  alter table public.print_agents
+    add constraint print_agents_platform_check
+    check (platform is null or platform in ('android', 'windows', 'macos'));
+exception
+  when duplicate_object then null;
+end;
+$$;
+
 create index if not exists print_agents_branch_active_idx
   on public.print_agents (branch_id, is_active);
+
+create index if not exists print_agents_platform_idx
+  on public.print_agents (platform);
 
 create unique index if not exists print_agents_agent_code_idx
   on public.print_agents (agent_code)
   where agent_code is not null;
 
+do $$
+begin
+  update public.print_agents pa
+  set platform = 'android'
+  where pa.platform is null
+    and exists (
+      select 1
+      from public.print_agent_activations paa
+      where paa.used_by_agent_id = pa.id
+    );
+exception
+  when undefined_table then null;
+end;
+$$;
+
+with inferred as (
+  select
+    id,
+    case
+      when concat_ws(' ', name, last_agent_name) ~* 'android' then 'android'
+      when concat_ws(' ', name, last_agent_name) ~* '(macos|mac os|osx|darwin|(^|[^a-z])mac([^a-z]|$))' then 'macos'
+      when concat_ws(' ', name, last_agent_name) ~* '(windows|(^|[^a-z])win([^a-z]|$))' then 'windows'
+      else null
+    end as platform
+  from public.print_agents
+  where platform is null
+)
+update public.print_agents pa
+set platform = inferred.platform
+from inferred
+where pa.id = inferred.id
+  and inferred.platform is not null;
+
+drop function if exists public.create_print_agent(uuid, uuid, text, text);
+
 create or replace function public.create_print_agent(
   p_tenant_id uuid,
   p_branch_id uuid,
   p_name text,
-  p_agent_code text default null
+  p_agent_code text default null,
+  p_platform text default null
 )
 returns table (
   agent_id uuid,
@@ -76,6 +127,7 @@ set search_path = public, pg_temp
 as $$
 declare
   v_token text;
+  v_platform text;
 begin
   if not exists (
     select 1
@@ -86,6 +138,11 @@ begin
     raise exception 'branch_does_not_belong_to_tenant';
   end if;
 
+  v_platform := lower(nullif(btrim(p_platform), ''));
+  if v_platform is not null and v_platform not in ('android', 'windows', 'macos') then
+    raise exception 'invalid_agent_platform';
+  end if;
+
   v_token := 'srpa_' || encode(extensions.gen_random_bytes(32), 'hex');
 
   insert into public.print_agents (
@@ -93,6 +150,7 @@ begin
     branch_id,
     name,
     agent_code,
+    platform,
     token_hash
   )
   values (
@@ -100,6 +158,7 @@ begin
     p_branch_id,
     p_name,
     p_agent_code,
+    v_platform,
     encode(extensions.digest(v_token, 'sha256'), 'hex')
   )
   returning id into agent_id;
@@ -109,10 +168,10 @@ begin
 end;
 $$;
 
-revoke all on function public.create_print_agent(uuid, uuid, text, text) from public;
-revoke all on function public.create_print_agent(uuid, uuid, text, text) from anon;
-revoke all on function public.create_print_agent(uuid, uuid, text, text) from authenticated;
-grant execute on function public.create_print_agent(uuid, uuid, text, text) to service_role;
+revoke all on function public.create_print_agent(uuid, uuid, text, text, text) from public;
+revoke all on function public.create_print_agent(uuid, uuid, text, text, text) from anon;
+revoke all on function public.create_print_agent(uuid, uuid, text, text, text) from authenticated;
+grant execute on function public.create_print_agent(uuid, uuid, text, text, text) to service_role;
 
 create or replace function public._print_agent_from_token(
   p_agent_token text

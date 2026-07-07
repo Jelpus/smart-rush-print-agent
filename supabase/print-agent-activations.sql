@@ -1,6 +1,22 @@
 create schema if not exists extensions;
 create extension if not exists pgcrypto with schema extensions;
 
+alter table public.print_agents
+  add column if not exists platform text;
+
+do $$
+begin
+  alter table public.print_agents
+    add constraint print_agents_platform_check
+    check (platform is null or platform in ('android', 'windows', 'macos'));
+exception
+  when duplicate_object then null;
+end;
+$$;
+
+create index if not exists print_agents_platform_idx
+  on public.print_agents (platform);
+
 create table if not exists public.print_agent_activations (
   id uuid primary key default gen_random_uuid(),
   tenant_id uuid not null references public.tenants(id) on delete cascade,
@@ -8,6 +24,7 @@ create table if not exists public.print_agent_activations (
 
   agent_name text,
   agent_code text,
+  platform text not null default 'android',
   secret_hash text not null unique,
 
   expires_at timestamptz not null,
@@ -17,6 +34,27 @@ create table if not exists public.print_agent_activations (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.print_agent_activations
+  add column if not exists platform text;
+
+update public.print_agent_activations
+set platform = 'android'
+where platform is null;
+
+alter table public.print_agent_activations
+  alter column platform set default 'android',
+  alter column platform set not null;
+
+do $$
+begin
+  alter table public.print_agent_activations
+    add constraint print_agent_activations_platform_check
+    check (platform in ('android'));
+exception
+  when duplicate_object then null;
+end;
+$$;
 
 create index if not exists print_agent_activations_branch_idx
   on public.print_agent_activations (branch_id, expires_at);
@@ -99,6 +137,7 @@ begin
     branch_id,
     agent_name,
     agent_code,
+    platform,
     secret_hash,
     expires_at
   )
@@ -107,6 +146,7 @@ begin
     v_branch.id,
     v_agent_name,
     v_agent_code,
+    'android',
     encode(extensions.digest(v_secret, 'sha256'), 'hex'),
     v_expires_at
   )
@@ -197,6 +237,7 @@ begin
     branch_id,
     name,
     agent_code,
+    platform,
     token_hash,
     last_agent_name
   )
@@ -205,6 +246,7 @@ begin
     v_activation.branch_id,
     v_agent_name,
     v_activation.agent_code,
+    coalesce(v_activation.platform, 'android'),
     encode(extensions.digest(v_token, 'sha256'), 'hex'),
     v_agent_name
   )
@@ -232,3 +274,12 @@ $$;
 
 revoke all on function public.activate_print_agent(uuid, text, text) from public;
 grant execute on function public.activate_print_agent(uuid, text, text) to anon, authenticated;
+
+update public.print_agents pa
+set platform = 'android'
+where pa.platform is null
+  and exists (
+    select 1
+    from public.print_agent_activations paa
+    where paa.used_by_agent_id = pa.id
+  );

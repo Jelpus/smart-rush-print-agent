@@ -118,6 +118,7 @@ async function createDesktopAgent({ tenantId, branchId, platform, agentName, age
     p_branch_id: branch.id,
     p_name: cleanString(agentName) || `SmartRush Agent ${platformLabel}`,
     p_agent_code: cleanString(agentCode) || null,
+    p_platform: platform,
   });
 
   if (error) throw error;

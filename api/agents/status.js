@@ -52,7 +52,7 @@ module.exports = async function handler(request, response) {
 
     let agentsQuery = supabase
       .from("print_agents")
-      .select("id,tenant_id,branch_id,name,agent_code,is_active,last_seen_at,last_agent_name,created_at,updated_at")
+      .select("id,tenant_id,branch_id,name,agent_code,platform,is_active,last_seen_at,last_agent_name,created_at,updated_at")
       .eq("branch_id", branchId)
       .order("last_seen_at", { ascending: false, nullsFirst: false });
 

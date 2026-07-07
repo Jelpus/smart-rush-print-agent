@@ -78,7 +78,7 @@ function getSourceVersion() {
   }
 }
 
-async function createAgentToken({ branchId, agentName, agentCode }) {
+async function createAgentToken({ branchId, agentName, agentCode, platform }) {
   requireBuildConfig();
   const supabase = createClient(config.supabaseUrl, process.env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -99,6 +99,7 @@ async function createAgentToken({ branchId, agentName, agentCode }) {
     p_branch_id: branch.data.id,
     p_name: agentName || `SmartRush Agent ${branch.data.name || branch.data.id}`,
     p_agent_code: code,
+    p_platform: platform,
   });
 
   if (created.error) throw created.error;
@@ -252,6 +253,7 @@ async function buildPackage({ platform, branchId, agentName, agentCode }) {
     branchId,
     agentName: agentName || `SmartRush Agent ${platformLabel}`,
     agentCode,
+    platform,
   });
   const envText = buildEnvFile({
     agentId: createdAgent.agentId,

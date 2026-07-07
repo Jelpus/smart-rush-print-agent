@@ -224,6 +224,8 @@ Authorization: Bearer ...
 
 Usa `"platform": "macos"` para macOS. Este endpoint crea un agente permanente con `create_print_agent`, embebe su token en `SmartRushPrintAgent/.env.locale` y devuelve un ZIP con los instaladores del sistema elegido. El ZIP contiene scripts de instalar, probar conexion y desinstalar.
 
+El endpoint tambien guarda `print_agents.platform` con `windows` o `macos`. Android guarda `platform = 'android'` al activar el QR. Para bases existentes, aplica de nuevo `supabase/print-agent-rpcs.sql` y `supabase/print-agent-activations.sql`; esos scripts agregan la columna y hacen backfill de agentes ya creados cuando se puede inferir la plataforma.
+
 ## branch_printers.connection
 
 Ejemplo recomendado:
