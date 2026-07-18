@@ -184,21 +184,23 @@ test("renders a detailed SmartRush pre-ticket payload", () => {
   const text = buffer.toString("latin1");
   assert.equal(text.includes("PRE-TICKET"), true);
   assert.equal(text.includes("Restaurante Sheiki"), true);
-  assert.equal(text.includes("NUEVO"), true);
-  assert.equal(text.includes("ENTREGADO"), true);
-  assert.equal(text.includes("PAGADO"), true);
-  assert.equal(text.includes("DEVOLUCIONES"), true);
+  assert.equal(text.includes("DETALLE"), true);
+  assert.equal(text.includes("NUEVO"), false);
+  assert.equal(text.includes("ENTREGADO"), false);
+  assert.equal(text.includes("DEVOLUCIONES"), false);
   assert.equal(text.includes("1 x Capuccino"), true);
-  assert.equal(text.includes("Estado"), true);
-  assert.equal(text.includes("Pendiente"), true);
+  assert.equal(text.includes("Unitario"), false);
+  assert.equal(text.includes("Estado"), false);
+  assert.equal(text.includes("Pendiente"), false);
   assert.equal(text.includes("Variante: Venti"), true);
   assert.equal(text.includes("Extra: Azucar"), true);
   assert.equal(text.includes("Nota: sin canela"), true);
-  assert.equal(text.includes("DESCUENTOS / PROMOS"), true);
-  assert.equal(text.includes("Promo 2x1"), true);
-  assert.equal(text.includes("Total cuenta"), true);
-  assert.equal(text.includes("Total pagado"), true);
-  assert.equal(text.includes("Total por pagar"), true);
+  assert.equal(text.includes("Subtotal"), true);
+  assert.equal(text.includes("Descuento / promo"), true);
+  assert.equal(text.includes("Total con descuento"), true);
+  assert.equal(text.includes("Pagado"), true);
+  assert.equal(text.includes("TOTAL A PAGAR"), true);
+  assert.equal(text.includes("DESCUENTOS / PROMOS"), false);
 });
 
 test("renders only account total for a pre-ticket without payments or discounts", () => {
@@ -219,10 +221,53 @@ test("renders only account total for a pre-ticket without payments or discounts"
   });
 
   const text = buffer.toString("latin1");
-  assert.equal(text.includes("Total cuenta"), true);
-  assert.equal(text.includes("Total pagado"), false);
-  assert.equal(text.includes("Total por pagar"), false);
+  assert.equal(text.includes("TOTAL A PAGAR"), true);
+  assert.equal(text.includes("Subtotal"), false);
+  assert.equal(text.includes("Pagado"), false);
   assert.equal(text.includes("DESCUENTOS / PROMOS"), false);
+});
+
+test("explains an implicit promotion and omits empty sections and null-like values", () => {
+  const buffer = renderTicket({
+    document_kind: "pre_ticket",
+    order: { code: "null", sale_by_label: "Sala", table_label: "M1" },
+    payment: { currency: "PEN" },
+    pre_ticket: {
+      summary: {
+        total_account: 112,
+        total_paid: 0,
+        total_due: 80,
+        has_payments: true,
+      },
+      sections: [
+        { key: "new", label: "Nuevo", total: 0, items: [] },
+        {
+          key: "delivered",
+          label: "Entregado",
+          total: 112,
+          items: [
+            { name: "Pisco Sour Clasico", quantity: 2, line_total: 60, notes: "null" },
+            { name: "Chilcano Clasico", quantity: 2, line_total: 52 },
+          ],
+        },
+        { key: "paid", label: "Pagado", total: 0, items: [] },
+        { key: "returns", label: "Devoluciones", total: 0, items: [] },
+      ],
+    },
+  });
+
+  const text = buffer.toString("latin1");
+  assert.equal(text.includes("2 x Pisco Sour Clasico"), true);
+  assert.equal(text.includes("2 x Chilcano Clasico"), true);
+  assert.equal(text.includes("Subtotal"), true);
+  assert.equal(text.includes("Descuento / promo"), true);
+  assert.equal(text.includes("TOTAL A PAGAR"), true);
+  assert.equal(text.includes("Total con descuento"), false);
+  assert.equal(text.includes("Pagado"), false);
+  assert.equal(text.includes("Sin items"), false);
+  assert.equal(text.includes("ENTREGADO"), false);
+  assert.equal(text.includes("Nota: null"), false);
+  assert.equal(text.includes("Orden"), false);
 });
 
 test("renders a prep ticket with variants and notes", () => {

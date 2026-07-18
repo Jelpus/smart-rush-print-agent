@@ -281,8 +281,9 @@ function modifierLine(modifier, currency) {
   return [label || "Opcion", value].filter(Boolean).join(": ") + amount;
 }
 
-function hasPositiveAmount(value) {
-  return Number(value || 0) > 0;
+function numericAmount(value, fallback = 0) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : fallback;
 }
 
 function renderPreTicket(payload, options = {}) {
@@ -299,8 +300,27 @@ function renderPreTicket(payload, options = {}) {
       : [];
   const currency = payload.payment?.currency;
   const timeZone = payloadTimeZone(payload);
-  const hasPayments = Boolean(summary.has_payments) || hasPositiveAmount(summary.total_paid);
-  const hasDiscounts = discounts.length > 0 || hasPositiveAmount(summary.total_discounts);
+  const subtotal = numericAmount(summary.total_account);
+  const totalPaid = numericAmount(summary.total_paid);
+  const explicitTotalDue = summary.total_due !== undefined
+    ? numericAmount(summary.total_due)
+    : null;
+  let totalDiscounts = numericAmount(summary.total_discounts);
+  if (totalDiscounts <= 0) {
+    totalDiscounts = discounts.reduce(
+      (total, discount) => total + numericAmount(discount?.amount ?? discount?.discount),
+      0,
+    );
+  }
+  if (totalDiscounts <= 0 && explicitTotalDue !== null) {
+    totalDiscounts = Math.max(0, subtotal - totalPaid - explicitTotalDue);
+  }
+  const hasPayments = totalPaid > 0;
+  const hasDiscounts = totalDiscounts > 0;
+  const totalAfterDiscounts = summary.total_after_discounts !== undefined
+    ? numericAmount(summary.total_after_discounts)
+    : Math.max(0, subtotal - totalDiscounts);
+  const totalDue = explicitTotalDue ?? Math.max(0, totalAfterDiscounts - totalPaid);
 
   if (logo) parts.push(logo);
   parts.push(center(businessName));
@@ -321,28 +341,19 @@ function renderPreTicket(payload, options = {}) {
   if (firstText(payload.order?.guests_count)) parts.push(contentLine(twoColumns("Personas", payload.order.guests_count)));
   if (firstText(payload.cashier)) parts.push(contentLine(twoColumns("Atendido por", payload.cashier)));
 
-  for (const section of sections) {
-    const items = Array.isArray(section.items) ? section.items : [];
-    const label = firstText(section.label, section.key) || "Detalle";
+  const itemSections = sections.filter(
+    (section) => Array.isArray(section?.items) && section.items.length > 0,
+  );
+  if (itemSections.length > 0) {
     parts.push(contentDivider());
-    parts.push(contentBold(twoColumns(label.toUpperCase(), money(section.total ?? 0, currency))));
-
-    if (items.length === 0) {
-      parts.push(contentLine("  Sin items"));
-      continue;
-    }
-
+    parts.push(contentBold("DETALLE"));
+  }
+  for (const section of itemSections) {
+    const items = section.items;
     for (const item of items) {
       const quantity = firstText(item.quantity) || 1;
       const name = firstText(item.name, item.text);
       parts.push(contentLine(twoColumns(`${quantity} x ${name}`, money(item.line_total, currency))));
-      parts.push(contentLine(twoColumns("  Unitario", money(item.unit_price, currency))));
-      if (firstText(item.status_label)) parts.push(contentLine(twoColumns("  Estado", item.status_label)));
-      parts.push(contentLine(twoColumns("  Pagado", money(item.paid_amount || 0, currency))));
-      if (hasPositiveAmount(item.discount_amount)) {
-        parts.push(contentLine(twoColumns("  Descuento", `-${money(item.discount_amount, currency)}`)));
-      }
-      parts.push(contentLine(twoColumns("  Pendiente", money(item.outstanding_amount || 0, currency))));
 
       const modifiers = Array.isArray(item.modifiers) ? item.modifiers : [];
       for (const modifier of modifiers) {
@@ -356,36 +367,21 @@ function renderPreTicket(payload, options = {}) {
     }
   }
 
-  if (hasDiscounts) {
-    parts.push(contentDivider());
-    parts.push(contentBold("DESCUENTOS / PROMOS"));
-    if (discounts.length === 0) {
-      parts.push(contentLine(twoColumns("Descuentos aplicados", `-${money(summary.total_discounts || 0, currency)}`)));
-    } else {
-      for (const discount of discounts) {
-        const name = firstText(discount.name, discount.description) || "Descuento";
-        const amount = discount.amount ?? discount.discount;
-        parts.push(contentLine(twoColumns(name, `-${money(amount, currency)}`)));
-        const description = firstText(discount.description);
-        if (description && description !== name) {
-          parts.push(contentLine(`  ${description}`));
-        }
-      }
-    }
-  }
-
   parts.push(contentDivider());
   if (!hasPayments && !hasDiscounts) {
-    parts.push(contentBold(twoColumns("Total cuenta", money(summary.total_account, currency))));
+    parts.push(contentBold(twoColumns("TOTAL A PAGAR", money(totalDue, currency))));
   } else {
-    parts.push(contentLine(twoColumns("Total cuenta", money(summary.total_account, currency))));
+    parts.push(contentLine(twoColumns("Subtotal", money(subtotal, currency))));
     if (hasDiscounts) {
-      parts.push(contentLine(twoColumns("Total descuentos", `-${money(summary.total_discounts || 0, currency)}`)));
+      parts.push(contentLine(twoColumns("Descuento / promo", `-${money(totalDiscounts, currency)}`)));
     }
     if (hasPayments) {
-      parts.push(contentLine(twoColumns("Total pagado", money(summary.total_paid || 0, currency))));
+      if (hasDiscounts) {
+        parts.push(contentLine(twoColumns("Total con descuento", money(totalAfterDiscounts, currency))));
+      }
+      parts.push(contentLine(twoColumns("Pagado", `-${money(totalPaid, currency)}`)));
     }
-    parts.push(contentBold(twoColumns("Total por pagar", money(summary.total_due, currency))));
+    parts.push(contentBold(twoColumns("TOTAL A PAGAR", money(totalDue, currency))));
   }
 
   parts.push(contentDivider());

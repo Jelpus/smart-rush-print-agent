@@ -164,6 +164,32 @@ final class TicketRenderer {
         if (preTicket == null) preTicket = new JSONObject();
         JSONObject summary = preTicket.optJSONObject("summary");
         if (summary == null) summary = new JSONObject();
+        JSONArray discounts = preTicket.optJSONArray("discounts");
+        if (discounts == null) discounts = preTicket.optJSONArray("applied_promotions");
+
+        double subtotal = finiteNumber(summary.opt("total_account"), 0);
+        double totalPaid = finiteNumber(summary.opt("total_paid"), 0);
+        boolean hasExplicitTotalDue = summary.has("total_due") && summary.opt("total_due") != JSONObject.NULL;
+        double explicitTotalDue = finiteNumber(summary.opt("total_due"), 0);
+        double totalDiscounts = finiteNumber(summary.opt("total_discounts"), 0);
+        if (totalDiscounts <= 0 && discounts != null) {
+            for (int index = 0; index < discounts.length(); index += 1) {
+                JSONObject discount = discounts.optJSONObject(index);
+                if (discount == null) continue;
+                totalDiscounts += finiteNumber(firstPresent(discount, "amount", "discount"), 0);
+            }
+        }
+        if (totalDiscounts <= 0 && hasExplicitTotalDue) {
+            totalDiscounts = Math.max(0, subtotal - totalPaid - explicitTotalDue);
+        }
+        boolean hasPayments = totalPaid > 0;
+        boolean hasDiscounts = totalDiscounts > 0;
+        double totalAfterDiscounts = summary.has("total_after_discounts")
+                ? finiteNumber(summary.opt("total_after_discounts"), 0)
+                : Math.max(0, subtotal - totalDiscounts);
+        double totalDue = hasExplicitTotalDue
+                ? explicitTotalDue
+                : Math.max(0, totalAfterDiscounts - totalPaid);
 
         String businessName = firstNonEmpty(
                 business != null ? business.optString("display_name", "") : "",
@@ -189,17 +215,17 @@ final class TicketRenderer {
         if (!firstNonEmpty(payload.optString("cashier", "")).isEmpty()) contentLine(out, twoColumns("Atendido por", payload.optString("cashier")));
 
         JSONArray sections = preTicket.optJSONArray("sections");
+        boolean detailStarted = false;
         if (sections != null) {
             for (int sectionIndex = 0; sectionIndex < sections.length(); sectionIndex += 1) {
                 JSONObject section = sections.optJSONObject(sectionIndex);
                 if (section == null) continue;
-                contentDivider(out);
-                String label = firstNonEmpty(section.optString("label", ""), section.optString("key", ""), "Detalle");
-                contentBold(out, twoColumns(label.toUpperCase(Locale.ROOT), money(section.opt("total"), currency)));
                 JSONArray items = section.optJSONArray("items");
-                if (items == null || items.length() == 0) {
-                    contentLine(out, "  Sin items");
-                    continue;
+                if (items == null || items.length() == 0) continue;
+                if (!detailStarted) {
+                    contentDivider(out);
+                    contentBold(out, "DETALLE");
+                    detailStarted = true;
                 }
                 for (int itemIndex = 0; itemIndex < items.length(); itemIndex += 1) {
                     JSONObject item = items.optJSONObject(itemIndex);
@@ -207,9 +233,6 @@ final class TicketRenderer {
                     String quantity = firstNonEmpty(item.optString("quantity", ""), "1");
                     String name = firstNonEmpty(item.optString("name", ""), item.optString("text", ""));
                     contentLine(out, twoColumns(quantity + " x " + name, money(item.opt("line_total"), currency)));
-                    if (item.has("unit_price")) contentLine(out, twoColumns("  Unitario", money(item.opt("unit_price"), currency)));
-                    if (item.has("paid_amount")) contentLine(out, twoColumns("  Pagado", money(item.opt("paid_amount"), currency)));
-                    if (item.has("outstanding_amount")) contentLine(out, twoColumns("  Pendiente", money(item.opt("outstanding_amount"), currency)));
                     String note = firstNonEmpty(item.optString("notes", ""));
                     if (!note.isEmpty()) contentLine(out, "  Nota: " + note);
                     contentLine(out, "");
@@ -218,9 +241,17 @@ final class TicketRenderer {
         }
 
         contentDivider(out);
-        if (summary.has("total_account")) contentLine(out, twoColumns("Total cuenta", money(summary.opt("total_account"), currency)));
-        if (summary.has("total_paid")) contentLine(out, twoColumns("Total pagado", money(summary.opt("total_paid"), currency)));
-        if (summary.has("total_due")) contentBold(out, twoColumns("Total por pagar", money(summary.opt("total_due"), currency)));
+        if (!hasPayments && !hasDiscounts) {
+            contentBold(out, twoColumns("TOTAL A PAGAR", money(totalDue, currency)));
+        } else {
+            contentLine(out, twoColumns("Subtotal", money(subtotal, currency)));
+            if (hasDiscounts) contentLine(out, twoColumns("Descuento / promo", "-" + money(totalDiscounts, currency)));
+            if (hasPayments) {
+                if (hasDiscounts) contentLine(out, twoColumns("Total con descuento", money(totalAfterDiscounts, currency)));
+                contentLine(out, twoColumns("Pagado", "-" + money(totalPaid, currency)));
+            }
+            contentBold(out, twoColumns("TOTAL A PAGAR", money(totalDue, currency)));
+        }
         center(out, firstNonEmpty(payload.optString("footer", ""), "Documento no fiscal"));
         center(out, "Sistema automatizado por Smart Rush");
         finishTicket(out);
@@ -612,6 +643,11 @@ final class TicketRenderer {
         } catch (Exception ignored) {
             return Double.NaN;
         }
+    }
+
+    private static double finiteNumber(Object value, double fallback) {
+        double amount = number(value);
+        return Double.isNaN(amount) || Double.isInfinite(amount) ? fallback : amount;
     }
 
     private static String formatDate(String value, String timeZone) {
