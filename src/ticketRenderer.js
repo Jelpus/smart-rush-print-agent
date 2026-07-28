@@ -293,7 +293,7 @@ function optionalNumericAmount(value) {
   return Number.isFinite(amount) ? amount : null;
 }
 
-function salesLineAmounts(item, payment = {}) {
+function salesLineAmounts(item) {
   const quantity = optionalNumericAmount(item.quantity) ?? 1;
   const unitPrice = optionalNumericAmount(item.unit_price ?? item.price);
   const declaredGross = optionalNumericAmount(
@@ -301,26 +301,63 @@ function salesLineAmounts(item, payment = {}) {
   );
   const calculatedGross = unitPrice !== null ? quantity * unitPrice : null;
   const declaredNet = optionalNumericAmount(
-    item.net_line_total ?? item.final_line_total ?? item.paid_amount,
+    item.net_line_total ?? item.final_line_total,
   );
   const grossCandidates = [declaredGross, calculatedGross, declaredNet].filter(
     (value) => value !== null,
   );
   const gross = grossCandidates.length > 0 ? Math.max(...grossCandidates) : 0;
   const explicitDiscount = optionalNumericAmount(item.discount_amount ?? item.discount);
-  const paymentHasDiscount = numericAmount(payment.discount) > 0;
-
-  let discount = explicitDiscount !== null ? Math.max(0, explicitDiscount) : 0;
+  const discount = explicitDiscount !== null ? Math.max(0, explicitDiscount) : 0;
   let net = Math.max(0, gross - discount);
-  if (discount === 0 && paymentHasDiscount && declaredNet !== null && declaredNet < gross) {
-    discount = gross - declaredNet;
-    net = declaredNet;
-  } else if (discount > 0) {
-    const explicitNet = optionalNumericAmount(item.net_line_total ?? item.final_line_total);
-    if (explicitNet !== null) net = explicitNet;
-  }
+  if (discount > 0 && declaredNet !== null) net = declaredNet;
 
   return { quantity, unitPrice, gross, discount, net };
+}
+
+function otherDiscountDetails(payment = {}) {
+  const entries = Array.isArray(payment.other_discounts)
+    ? payment.other_discounts
+    : Array.isArray(payment.otherDiscounts)
+      ? payment.otherDiscounts
+      : [];
+
+  const details = entries
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const code = firstText(entry.code, entry.coupon_code);
+      const type = firstText(entry.type);
+      const fallbackLabel = code
+        ? `${type.toLowerCase() === "coupon" ? "Cupon" : "Codigo"}: ${code}`
+        : type;
+      const label = firstText(entry.label, entry.name, entry.description, fallbackLabel);
+      if (!label) return null;
+      return { label, amount: optionalNumericAmount(entry.amount) };
+    })
+    .filter(Boolean);
+
+  if (details.length > 0) return details;
+
+  const couponLabel = firstText(payment.coupon_label, payment.meta?.coupon_label);
+  const couponCode = firstText(
+    payment.coupon_code,
+    payment.discount_code,
+    payment.meta?.coupon_code,
+  );
+  if (couponLabel || couponCode) {
+    const value = couponLabel && couponCode && couponLabel !== couponCode
+      ? `${couponLabel} (${couponCode})`
+      : couponLabel || couponCode;
+    return [{ label: `Cupon: ${value}`, amount: null }];
+  }
+
+  const reason = firstText(
+    payment.discount_reason,
+    payment.discount_label,
+    payment.meta?.discount_reason,
+    payment.meta?.discount_label,
+  );
+  return reason ? [{ label: `Motivo: ${reason}`, amount: null }] : [];
 }
 
 function renderPreTicket(payload, options = {}) {
@@ -487,9 +524,18 @@ function renderSmartRushTicket(payload, options = {}) {
   parts.push(contentDivider());
 
   const lines = Array.isArray(payload.lines) ? payload.lines : [];
-  for (const item of lines) {
+  const renderedLines = lines.map((item) => ({ item, amounts: salesLineAmounts(item) }));
+  const productDiscounts = renderedLines.reduce(
+    (total, line) => total + line.amounts.discount,
+    0,
+  );
+  const declaredDiscounts = numericAmount(payload.payment?.discount);
+  const totalDiscounts = Math.max(declaredDiscounts, productDiscounts);
+  const otherDiscounts = Math.max(0, totalDiscounts - productDiscounts);
+  const otherDiscountBreakdown = otherDiscountDetails(payload.payment);
+
+  for (const { item, amounts } of renderedLines) {
     const name = firstText(item.name, item.text);
-    const amounts = salesLineAmounts(item, payload.payment);
     const note = firstText(item.notes);
     parts.push(contentLine(name));
     if (amounts.unitPrice !== null) {
@@ -517,8 +563,32 @@ function renderSmartRushTicket(payload, options = {}) {
   if (optionalNumericAmount(payload.payment?.subtotal) !== null) {
     parts.push(contentLine(twoColumns("Subtotal", money(payload.payment.subtotal, currency))));
   }
-  if (numericAmount(payload.payment?.discount) > 0) {
-    parts.push(contentLine(twoColumns("Descuento total", `-${money(payload.payment.discount, currency)}`)));
+  if (totalDiscounts > 0) {
+    parts.push(
+      contentLine(
+        twoColumns(
+          "Descuento productos",
+          productDiscounts > 0 ? `-${money(productDiscounts, currency)}` : money(0, currency),
+        ),
+      ),
+    );
+    parts.push(
+      contentLine(
+        twoColumns(
+          "Otros descuentos",
+          otherDiscounts > 0 ? `-${money(otherDiscounts, currency)}` : money(0, currency),
+        ),
+      ),
+    );
+    if (otherDiscounts > 0) {
+      for (const detail of otherDiscountBreakdown) {
+        const detailAmount = detail.amount !== null && detail.amount > 0
+          ? `-${money(detail.amount, currency)}`
+          : "";
+        parts.push(contentLine(detailAmount ? twoColumns(`  ${detail.label}`, detailAmount) : `  ${detail.label}`));
+      }
+    }
+    parts.push(contentLine(twoColumns("Total descuentos", `-${money(totalDiscounts, currency)}`)));
   }
   if (numericAmount(payload.payment?.tip) > 0) {
     parts.push(contentLine(twoColumns("Propina", money(payload.payment.tip, currency))));

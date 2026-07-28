@@ -301,6 +301,7 @@ final class TicketRenderer {
 
         contentDivider(out);
         JSONArray lines = payload.optJSONArray("lines");
+        double productDiscounts = 0;
         if (lines != null) {
             for (int index = 0; index < lines.length(); index += 1) {
                 JSONObject item = lines.optJSONObject(index);
@@ -312,19 +313,13 @@ final class TicketRenderer {
                 double unitAmount = number(unitValue);
                 double declaredGross = number(firstPresent(item, "gross_line_total", "original_line_total", "line_total", "total"));
                 double calculatedGross = Double.isNaN(unitAmount) ? Double.NaN : quantityAmount * unitAmount;
-                double declaredNet = number(firstPresent(item, "net_line_total", "final_line_total", "paid_amount"));
+                double declaredNet = number(firstPresent(item, "net_line_total", "final_line_total"));
                 double gross = largestFinite(0, declaredGross, calculatedGross, declaredNet);
                 double explicitDiscount = number(firstPresent(item, "discount_amount", "discount"));
-                boolean paymentHasDiscount = payment != null && finiteNumber(payment.opt("discount"), 0) > 0;
                 double itemDiscount = Double.isNaN(explicitDiscount) ? 0 : Math.max(0, explicitDiscount);
                 double itemNet = Math.max(0, gross - itemDiscount);
-                if (itemDiscount == 0 && paymentHasDiscount && !Double.isNaN(declaredNet) && declaredNet < gross) {
-                    itemDiscount = gross - declaredNet;
-                    itemNet = declaredNet;
-                } else if (itemDiscount > 0) {
-                    double explicitNet = number(firstPresent(item, "net_line_total", "final_line_total"));
-                    if (!Double.isNaN(explicitNet)) itemNet = explicitNet;
-                }
+                if (itemDiscount > 0 && !Double.isNaN(declaredNet)) itemNet = declaredNet;
+                productDiscounts += itemDiscount;
                 String note = firstNonEmpty(item.optString("notes", ""));
                 contentLine(out, name);
                 if (!Double.isNaN(unitAmount)) {
@@ -343,7 +338,68 @@ final class TicketRenderer {
         if (payment != null) {
             contentDivider(out);
             if (!Double.isNaN(number(payment.opt("subtotal")))) contentLine(out, twoColumns("Subtotal", money(payment.opt("subtotal"), currency)));
-            if (number(payment.opt("discount")) > 0) contentLine(out, twoColumns("Descuento total", "-" + money(payment.opt("discount"), currency)));
+            double declaredDiscounts = finiteNumber(payment.opt("discount"), 0);
+            double totalDiscounts = Math.max(declaredDiscounts, productDiscounts);
+            double otherDiscounts = Math.max(0, totalDiscounts - productDiscounts);
+            if (totalDiscounts > 0) {
+                contentLine(out, twoColumns("Descuento productos", productDiscounts > 0 ? "-" + money(productDiscounts, currency) : money(0, currency)));
+                contentLine(out, twoColumns("Otros descuentos", otherDiscounts > 0 ? "-" + money(otherDiscounts, currency) : money(0, currency)));
+                if (otherDiscounts > 0) {
+                    JSONArray otherDiscountEntries = payment.optJSONArray("other_discounts");
+                    if (otherDiscountEntries == null) otherDiscountEntries = payment.optJSONArray("otherDiscounts");
+                    boolean printedDetail = false;
+                    if (otherDiscountEntries != null) {
+                        for (int index = 0; index < otherDiscountEntries.length(); index += 1) {
+                            JSONObject entry = otherDiscountEntries.optJSONObject(index);
+                            if (entry == null) continue;
+                            String code = firstNonEmpty(entry.optString("code", ""), entry.optString("coupon_code", ""));
+                            String type = firstNonEmpty(entry.optString("type", ""));
+                            String fallbackLabel = !code.isEmpty()
+                                    ? ("coupon".equalsIgnoreCase(type) ? "Cupon: " : "Codigo: ") + code
+                                    : type;
+                            String label = firstNonEmpty(
+                                    entry.optString("label", ""),
+                                    entry.optString("name", ""),
+                                    entry.optString("description", ""),
+                                    fallbackLabel
+                            );
+                            if (label.isEmpty()) continue;
+                            double detailAmount = number(entry.opt("amount"));
+                            contentLine(out, Double.isNaN(detailAmount) || detailAmount <= 0
+                                    ? "  " + label
+                                    : twoColumns("  " + label, "-" + money(detailAmount, currency)));
+                            printedDetail = true;
+                        }
+                    }
+                    if (!printedDetail) {
+                        JSONObject paymentMeta = payment.optJSONObject("meta");
+                        String couponLabel = firstNonEmpty(
+                                payment.optString("coupon_label", ""),
+                                paymentMeta != null ? paymentMeta.optString("coupon_label", "") : ""
+                        );
+                        String couponCode = firstNonEmpty(
+                                payment.optString("coupon_code", ""),
+                                payment.optString("discount_code", ""),
+                                paymentMeta != null ? paymentMeta.optString("coupon_code", "") : ""
+                        );
+                        if (!couponLabel.isEmpty() || !couponCode.isEmpty()) {
+                            String value = !couponLabel.isEmpty() && !couponCode.isEmpty() && !couponLabel.equals(couponCode)
+                                    ? couponLabel + " (" + couponCode + ")"
+                                    : firstNonEmpty(couponLabel, couponCode);
+                            contentLine(out, "  Cupon: " + value);
+                        } else {
+                            String reason = firstNonEmpty(
+                                    payment.optString("discount_reason", ""),
+                                    payment.optString("discount_label", ""),
+                                    paymentMeta != null ? paymentMeta.optString("discount_reason", "") : "",
+                                    paymentMeta != null ? paymentMeta.optString("discount_label", "") : ""
+                            );
+                            if (!reason.isEmpty()) contentLine(out, "  Motivo: " + reason);
+                        }
+                    }
+                }
+                contentLine(out, twoColumns("Total descuentos", "-" + money(totalDiscounts, currency)));
+            }
             if (number(payment.opt("tip")) > 0) contentLine(out, twoColumns("Propina", money(payment.opt("tip"), currency)));
             if (!Double.isNaN(number(payment.opt("total")))) contentBold(out, twoColumns("TOTAL", money(payment.opt("total"), currency)));
             String method = firstNonEmpty(payment.optString("method_label", ""), payment.optString("method", ""));

@@ -67,7 +67,7 @@ test("renders a SmartRush sales ticket payload", () => {
   assert.equal(text.includes("TOTAL"), true);
 });
 
-test("shows gross, discount, and net amounts for discounted sales lines", () => {
+test("keeps an unattributed payment discount out of individual product lines", () => {
   const buffer = renderTicket({
     receipt_number: "T-DISCOUNT",
     business: { display_name: "Memena" },
@@ -101,17 +101,62 @@ test("shows gross, discount, and net amounts for discounted sales lines", () => 
   const text = buffer.toString("latin1");
   assert.equal(text.includes("48 x 20,00 PEN"), true);
   assert.equal(text.includes("960,00 PEN"), true);
-  assert.equal(text.includes("Descuento producto"), true);
-  assert.equal(text.includes("-488,73 PEN"), true);
-  assert.equal(text.includes("Total producto"), true);
-  assert.equal(text.includes("471,27 PEN"), true);
+  assert.equal(text.includes("  Descuento producto"), false);
+  assert.equal(text.includes("Total producto"), false);
+  assert.equal(text.includes("471,27 PEN"), false);
   assert.equal(text.includes("Subtotal"), true);
-  assert.equal(text.includes("Descuento total"), true);
-  assert.equal(text.includes("-560,00 PEN"), true);
+  assert.equal(text.includes("Descuento productos"), true);
+  assert.equal(text.includes("Otros descuentos"), true);
+  assert.equal(text.includes("Total descuentos"), true);
+  assert.equal(text.match(/-560,00 PEN/g)?.length, 2);
   assert.equal(text.includes("TOTAL"), true);
   assert.equal(text.includes("540,00 PEN"), true);
   assert.equal(text.includes("Recibido"), false);
   assert.equal(text.includes("Cambio"), false);
+});
+
+test("shows explicit product discounts separately from a traceable coupon", () => {
+  const buffer = renderTicket({
+    receipt_number: "T-MIXED-DISCOUNT",
+    business: { display_name: "Memena" },
+    payment: {
+      subtotal: 1100,
+      discount: 560,
+      total: 540,
+      currency: "PEN",
+      other_discounts: [
+        { type: "coupon", label: "Cupon VIP", code: "VIP60", amount: 60 },
+      ],
+    },
+    lines: [
+      {
+        quantity: 48,
+        name: "Cerveza 750 ml",
+        unit_price: 20,
+        line_total: 960,
+        discount_amount: 500,
+        net_line_total: 460,
+      },
+      {
+        quantity: 1,
+        name: "Triveno Cabernet Malbec",
+        unit_price: 140,
+        line_total: 140,
+      },
+    ],
+  });
+
+  const text = buffer.toString("latin1");
+  assert.equal(text.includes("  Descuento producto"), true);
+  assert.equal(text.includes("-500,00 PEN"), true);
+  assert.equal(text.includes("Total producto"), true);
+  assert.equal(text.includes("460,00 PEN"), true);
+  assert.equal(text.includes("Descuento productos"), true);
+  assert.equal(text.includes("Otros descuentos"), true);
+  assert.equal(text.includes("Cupon VIP"), true);
+  assert.equal(text.includes("-60,00 PEN"), true);
+  assert.equal(text.includes("Total descuentos"), true);
+  assert.equal(text.includes("-560,00 PEN"), true);
 });
 
 test("formats receipt dates with the branch timezone", () => {
