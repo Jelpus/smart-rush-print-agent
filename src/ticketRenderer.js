@@ -286,6 +286,43 @@ function numericAmount(value, fallback = 0) {
   return Number.isFinite(amount) ? amount : fallback;
 }
 
+function optionalNumericAmount(value) {
+  const raw = cleanText(value);
+  if (!raw) return null;
+  const amount = Number(raw);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function salesLineAmounts(item, payment = {}) {
+  const quantity = optionalNumericAmount(item.quantity) ?? 1;
+  const unitPrice = optionalNumericAmount(item.unit_price ?? item.price);
+  const declaredGross = optionalNumericAmount(
+    item.gross_line_total ?? item.original_line_total ?? item.line_total ?? item.total,
+  );
+  const calculatedGross = unitPrice !== null ? quantity * unitPrice : null;
+  const declaredNet = optionalNumericAmount(
+    item.net_line_total ?? item.final_line_total ?? item.paid_amount,
+  );
+  const grossCandidates = [declaredGross, calculatedGross, declaredNet].filter(
+    (value) => value !== null,
+  );
+  const gross = grossCandidates.length > 0 ? Math.max(...grossCandidates) : 0;
+  const explicitDiscount = optionalNumericAmount(item.discount_amount ?? item.discount);
+  const paymentHasDiscount = numericAmount(payment.discount) > 0;
+
+  let discount = explicitDiscount !== null ? Math.max(0, explicitDiscount) : 0;
+  let net = Math.max(0, gross - discount);
+  if (discount === 0 && paymentHasDiscount && declaredNet !== null && declaredNet < gross) {
+    discount = gross - declaredNet;
+    net = declaredNet;
+  } else if (discount > 0) {
+    const explicitNet = optionalNumericAmount(item.net_line_total ?? item.final_line_total);
+    if (explicitNet !== null) net = explicitNet;
+  }
+
+  return { quantity, unitPrice, gross, discount, net };
+}
+
 function renderPreTicket(payload, options = {}) {
   const parts = [command(ESC, 0x40)];
   const logo = logoBlock(options);
@@ -451,36 +488,52 @@ function renderSmartRushTicket(payload, options = {}) {
 
   const lines = Array.isArray(payload.lines) ? payload.lines : [];
   for (const item of lines) {
-    const quantity = firstText(item.quantity) || 1;
     const name = firstText(item.name, item.text);
-    const total = money(item.paid_amount ?? item.line_total ?? item.total ?? item.price, currency);
-    const unitPrice = money(item.unit_price ?? item.price, currency);
+    const amounts = salesLineAmounts(item, payload.payment);
     const note = firstText(item.notes);
-    parts.push(contentLine(twoColumns(name, total)));
-    parts.push(contentLine(`  ${quantity} x ${unitPrice}${note ? ` - ${note}` : ""}`));
+    parts.push(contentLine(name));
+    if (amounts.unitPrice !== null) {
+      parts.push(
+        contentLine(
+          twoColumns(
+            `  ${firstText(item.quantity) || 1} x ${money(amounts.unitPrice, currency)}`,
+            money(amounts.gross, currency),
+          ),
+        ),
+      );
+    } else {
+      parts.push(contentLine(twoColumns("  Importe", money(amounts.gross, currency))));
+    }
+    if (amounts.discount > 0) {
+      parts.push(
+        contentLine(twoColumns("  Descuento producto", `-${money(amounts.discount, currency)}`)),
+      );
+      parts.push(contentBold(twoColumns("  Total producto", money(amounts.net, currency))));
+    }
+    if (note) parts.push(contentLine(`  Nota: ${note}`));
   }
 
   parts.push(contentDivider());
-  if (payload.payment?.subtotal !== undefined) {
+  if (optionalNumericAmount(payload.payment?.subtotal) !== null) {
     parts.push(contentLine(twoColumns("Subtotal", money(payload.payment.subtotal, currency))));
   }
-  if (payload.payment?.discount) {
-    parts.push(contentLine(twoColumns("Descuento", `-${money(payload.payment.discount, currency)}`)));
+  if (numericAmount(payload.payment?.discount) > 0) {
+    parts.push(contentLine(twoColumns("Descuento total", `-${money(payload.payment.discount, currency)}`)));
   }
-  if (payload.payment?.tip) {
+  if (numericAmount(payload.payment?.tip) > 0) {
     parts.push(contentLine(twoColumns("Propina", money(payload.payment.tip, currency))));
   }
-  if (payload.payment?.total !== undefined) {
-    parts.push(contentBold(twoColumns("Total", money(payload.payment.total, currency))));
+  if (optionalNumericAmount(payload.payment?.total) !== null) {
+    parts.push(contentBold(twoColumns("TOTAL", money(payload.payment.total, currency))));
   }
   const paymentMethod = firstText(payload.payment?.method_label, payload.payment?.method);
   if (paymentMethod) {
     parts.push(contentLine(twoColumns("Metodo", paymentMethod)));
   }
-  if (payload.payment?.cash_received !== undefined) {
+  if (optionalNumericAmount(payload.payment?.cash_received) !== null) {
     parts.push(contentLine(twoColumns("Recibido", money(payload.payment.cash_received, currency))));
   }
-  if (payload.payment?.change_due !== undefined) {
+  if (optionalNumericAmount(payload.payment?.change_due) !== null) {
     parts.push(contentLine(twoColumns("Cambio", money(payload.payment.change_due, currency))));
   }
   if (firstText(payload.payment?.reference)) {

@@ -28,8 +28,8 @@ final class TicketRenderer {
     private static final int GS = 0x1D;
     private static final int WIDTH = 32;
     private static final int FEED_LINES_BEFORE_CUT = 6;
-    private static final int MAX_LOGO_WIDTH = 192;
-    private static final int MAX_LOGO_HEIGHT = 96;
+    private static final int PRINTER_DOT_WIDTH = 384;
+    private static final int LOGO_BOX_SIZE = 128;
     private static final Map<String, byte[]> LOGO_CACHE = new ConcurrentHashMap<>();
 
     private TicketRenderer() {
@@ -307,25 +307,49 @@ final class TicketRenderer {
                 if (item == null) continue;
                 String quantity = firstNonEmpty(item.optString("quantity", ""), "1");
                 String name = firstNonEmpty(item.optString("name", ""), item.optString("text", ""));
-                Object totalValue = firstPresent(item, "paid_amount", "line_total", "total", "price");
                 Object unitValue = firstPresent(item, "unit_price", "price");
+                double quantityAmount = finiteNumber(item.opt("quantity"), 1);
+                double unitAmount = number(unitValue);
+                double declaredGross = number(firstPresent(item, "gross_line_total", "original_line_total", "line_total", "total"));
+                double calculatedGross = Double.isNaN(unitAmount) ? Double.NaN : quantityAmount * unitAmount;
+                double declaredNet = number(firstPresent(item, "net_line_total", "final_line_total", "paid_amount"));
+                double gross = largestFinite(0, declaredGross, calculatedGross, declaredNet);
+                double explicitDiscount = number(firstPresent(item, "discount_amount", "discount"));
+                boolean paymentHasDiscount = payment != null && finiteNumber(payment.opt("discount"), 0) > 0;
+                double itemDiscount = Double.isNaN(explicitDiscount) ? 0 : Math.max(0, explicitDiscount);
+                double itemNet = Math.max(0, gross - itemDiscount);
+                if (itemDiscount == 0 && paymentHasDiscount && !Double.isNaN(declaredNet) && declaredNet < gross) {
+                    itemDiscount = gross - declaredNet;
+                    itemNet = declaredNet;
+                } else if (itemDiscount > 0) {
+                    double explicitNet = number(firstPresent(item, "net_line_total", "final_line_total"));
+                    if (!Double.isNaN(explicitNet)) itemNet = explicitNet;
+                }
                 String note = firstNonEmpty(item.optString("notes", ""));
-                contentLine(out, twoColumns(name, money(totalValue, currency)));
-                contentLine(out, "  " + quantity + " x " + money(unitValue, currency)
-                        + (!note.isEmpty() ? " - " + note : ""));
+                contentLine(out, name);
+                if (!Double.isNaN(unitAmount)) {
+                    contentLine(out, twoColumns("  " + quantity + " x " + money(unitAmount, currency), money(gross, currency)));
+                } else {
+                    contentLine(out, twoColumns("  Importe", money(gross, currency)));
+                }
+                if (itemDiscount > 0) {
+                    contentLine(out, twoColumns("  Descuento producto", "-" + money(itemDiscount, currency)));
+                    contentBold(out, twoColumns("  Total producto", money(itemNet, currency)));
+                }
+                if (!note.isEmpty()) contentLine(out, "  Nota: " + note);
             }
         }
 
         if (payment != null) {
             contentDivider(out);
-            if (payment.has("subtotal")) contentLine(out, twoColumns("Subtotal", money(payment.opt("subtotal"), currency)));
-            if (number(payment.opt("discount")) > 0) contentLine(out, twoColumns("Descuento", "-" + money(payment.opt("discount"), currency)));
+            if (!Double.isNaN(number(payment.opt("subtotal")))) contentLine(out, twoColumns("Subtotal", money(payment.opt("subtotal"), currency)));
+            if (number(payment.opt("discount")) > 0) contentLine(out, twoColumns("Descuento total", "-" + money(payment.opt("discount"), currency)));
             if (number(payment.opt("tip")) > 0) contentLine(out, twoColumns("Propina", money(payment.opt("tip"), currency)));
-            if (payment.has("total")) contentBold(out, twoColumns("Total", money(payment.opt("total"), currency)));
+            if (!Double.isNaN(number(payment.opt("total")))) contentBold(out, twoColumns("TOTAL", money(payment.opt("total"), currency)));
             String method = firstNonEmpty(payment.optString("method_label", ""), payment.optString("method", ""));
             if (!method.isEmpty()) contentLine(out, twoColumns("Metodo", method));
-            if (payment.has("cash_received")) contentLine(out, twoColumns("Recibido", money(payment.opt("cash_received"), currency)));
-            if (payment.has("change_due")) contentLine(out, twoColumns("Cambio", money(payment.opt("change_due"), currency)));
+            if (!Double.isNaN(number(payment.opt("cash_received")))) contentLine(out, twoColumns("Recibido", money(payment.opt("cash_received"), currency)));
+            if (!Double.isNaN(number(payment.opt("change_due")))) contentLine(out, twoColumns("Cambio", money(payment.opt("change_due"), currency)));
         }
 
         contentDivider(out);
@@ -510,28 +534,32 @@ final class TicketRenderer {
 
         int sourceWidth = bounds[2] - bounds[0] + 1;
         int sourceHeight = bounds[3] - bounds[1] + 1;
-        double scale = Math.min(1.0, Math.min((double) MAX_LOGO_WIDTH / sourceWidth, (double) MAX_LOGO_HEIGHT / sourceHeight));
+        double scale = Math.min((double) LOGO_BOX_SIZE / sourceWidth, (double) LOGO_BOX_SIZE / sourceHeight);
         int width = Math.max(1, (int) Math.round(sourceWidth * scale));
         int height = Math.max(1, (int) Math.round(sourceHeight * scale));
-        int rowBytes = (int) Math.ceil(width / 8.0);
-        byte[] raster = new byte[rowBytes * height];
+        int canvasHeight = LOGO_BOX_SIZE;
+        int xOffset = Math.max(0, (PRINTER_DOT_WIDTH - width) / 2);
+        int yOffset = Math.max(0, (canvasHeight - height) / 2);
+        int rowBytes = (int) Math.ceil(PRINTER_DOT_WIDTH / 8.0);
+        byte[] raster = new byte[rowBytes * canvasHeight];
 
         for (int y = 0; y < height; y += 1) {
             int sourceY = bounds[1] + Math.min(sourceHeight - 1, (int) Math.floor(y / scale));
             for (int x = 0; x < width; x += 1) {
                 int sourceX = bounds[0] + Math.min(sourceWidth - 1, (int) Math.floor(x / scale));
                 if (isInk(bitmap.getPixel(sourceX, sourceY), 190)) {
-                    raster[y * rowBytes + x / 8] |= (byte) (0x80 >> (x % 8));
+                    int canvasX = xOffset + x;
+                    int canvasY = yOffset + y;
+                    raster[canvasY * rowBytes + canvasX / 8] |= (byte) (0x80 >> (canvasX % 8));
                 }
             }
         }
 
         ByteArrayOutputStream image = new ByteArrayOutputStream();
-        command(image, ESC, 0x61, 0x01);
-        command(image, GS, 0x76, 0x30, 0x00, rowBytes & 0xFF, (rowBytes >> 8) & 0xFF, height & 0xFF, (height >> 8) & 0xFF);
+        command(image, ESC, 0x61, 0x00);
+        command(image, GS, 0x76, 0x30, 0x00, rowBytes & 0xFF, (rowBytes >> 8) & 0xFF, canvasHeight & 0xFF, (canvasHeight >> 8) & 0xFF);
         image.write(raster);
         image.write('\n');
-        command(image, ESC, 0x61, 0x00);
         return image.toByteArray();
     }
 
@@ -648,6 +676,14 @@ final class TicketRenderer {
     private static double finiteNumber(Object value, double fallback) {
         double amount = number(value);
         return Double.isNaN(amount) || Double.isInfinite(amount) ? fallback : amount;
+    }
+
+    private static double largestFinite(double fallback, double... values) {
+        double largest = fallback;
+        for (double value : values) {
+            if (!Double.isNaN(value) && !Double.isInfinite(value)) largest = Math.max(largest, value);
+        }
+        return largest;
     }
 
     private static String formatDate(String value, String timeZone) {

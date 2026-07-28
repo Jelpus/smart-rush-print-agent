@@ -1,6 +1,6 @@
 {
-  "versionCode": 5,
-  "versionName": "0.5.0",
-  "apkUrl": "https://yllkwmvbfibicerzllkg.supabase.co/storage/v1/object/public/apk/android/stable/5/SmartRush-Print-Agent-Android-v0.5.0-5.apk",
-  "releaseNotes": "Pre-ticket simplificado con subtotal, promocion aplicada y total a pagar."
+  "versionCode": 6,
+  "versionName": "0.6.0",
+  "apkUrl": "https://yllkwmvbfibicerzllkg.supabase.co/storage/v1/object/public/apk/android/stable/6/SmartRush-Print-Agent-Android-v0.6.0-6.apk",
+  "releaseNotes": "Detalle claro por producto con importe bruto, descuento y total neto; logo 1:1 ampliado y centrado."
 }

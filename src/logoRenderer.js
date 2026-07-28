@@ -5,8 +5,8 @@ const { PNG } = require("pngjs");
 const ESC = 0x1b;
 const GS = 0x1d;
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
-const MAX_LOGO_WIDTH = 192;
-const MAX_LOGO_HEIGHT = 96;
+const PRINTER_DOT_WIDTH = 384;
+const LOGO_BOX_SIZE = 128;
 const LOGO_CACHE = new Map();
 const PREP_JOB_TYPES = new Set(["bar_ticket", "kitchen_ticket", "food_ticket", "kds_ticket"]);
 
@@ -107,37 +107,41 @@ function renderPngLogo(buffer, options = {}) {
   const bounds = contentBounds(png);
   if (!bounds) return null;
 
-  const maxWidth = options.maxWidth || MAX_LOGO_WIDTH;
-  const maxHeight = options.maxHeight || MAX_LOGO_HEIGHT;
+  const boxSize = options.boxSize || LOGO_BOX_SIZE;
+  const printerWidth = options.printerWidth || PRINTER_DOT_WIDTH;
   const sourceWidth = bounds.right - bounds.left + 1;
   const sourceHeight = bounds.bottom - bounds.top + 1;
-  const scale = Math.min(1, maxWidth / sourceWidth, maxHeight / sourceHeight);
+  const scale = Math.min(boxSize / sourceWidth, boxSize / sourceHeight);
   const width = Math.max(1, Math.round(sourceWidth * scale));
   const height = Math.max(1, Math.round(sourceHeight * scale));
-  const rowBytes = Math.ceil(width / 8);
-  const raster = Buffer.alloc(rowBytes * height);
+  const canvasHeight = boxSize;
+  const xOffset = Math.max(0, Math.floor((printerWidth - width) / 2));
+  const yOffset = Math.max(0, Math.floor((canvasHeight - height) / 2));
+  const rowBytes = Math.ceil(printerWidth / 8);
+  const raster = Buffer.alloc(rowBytes * canvasHeight);
 
   for (let y = 0; y < height; y += 1) {
     const sourceY = bounds.top + Math.min(sourceHeight - 1, Math.floor(y / scale));
     for (let x = 0; x < width; x += 1) {
       const sourceX = bounds.left + Math.min(sourceWidth - 1, Math.floor(x / scale));
       if (isInk(png, sourceX, sourceY, 190)) {
-        raster[y * rowBytes + Math.floor(x / 8)] |= 0x80 >> (x % 8);
+        const canvasX = xOffset + x;
+        const canvasY = yOffset + y;
+        raster[canvasY * rowBytes + Math.floor(canvasX / 8)] |= 0x80 >> (canvasX % 8);
       }
     }
   }
 
   const xL = rowBytes & 0xff;
   const xH = (rowBytes >> 8) & 0xff;
-  const yL = height & 0xff;
-  const yH = (height >> 8) & 0xff;
+  const yL = canvasHeight & 0xff;
+  const yH = (canvasHeight >> 8) & 0xff;
 
   return Buffer.concat([
-    command(ESC, 0x61, 0x01),
+    command(ESC, 0x61, 0x00),
     command(GS, 0x76, 0x30, 0x00, xL, xH, yL, yH),
     raster,
     Buffer.from("\n"),
-    command(ESC, 0x61, 0x00),
   ]);
 }
 

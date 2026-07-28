@@ -64,7 +64,54 @@ test("renders a SmartRush sales ticket payload", () => {
   assert.equal(text.includes("Memena"), true);
   assert.equal(text.includes("T-DUMMY-MQ2HL6Q2"), true);
   assert.equal(text.includes("Ticket dummy agente local"), true);
-  assert.equal(text.includes("Total"), true);
+  assert.equal(text.includes("TOTAL"), true);
+});
+
+test("shows gross, discount, and net amounts for discounted sales lines", () => {
+  const buffer = renderTicket({
+    receipt_number: "T-DISCOUNT",
+    business: { display_name: "Memena" },
+    payment: {
+      subtotal: 1100,
+      discount: 560,
+      total: 540,
+      currency: "PEN",
+      method_label: "Tarjeta",
+      cash_received: null,
+      change_due: null,
+    },
+    lines: [
+      {
+        quantity: 48,
+        name: "Cerveza 750 ml",
+        unit_price: 20,
+        line_total: 960,
+        paid_amount: 471.27,
+      },
+      {
+        quantity: 1,
+        name: "Triveno Cabernet Malbec",
+        unit_price: 140,
+        line_total: 140,
+        paid_amount: 68.73,
+      },
+    ],
+  });
+
+  const text = buffer.toString("latin1");
+  assert.equal(text.includes("48 x 20,00 PEN"), true);
+  assert.equal(text.includes("960,00 PEN"), true);
+  assert.equal(text.includes("Descuento producto"), true);
+  assert.equal(text.includes("-488,73 PEN"), true);
+  assert.equal(text.includes("Total producto"), true);
+  assert.equal(text.includes("471,27 PEN"), true);
+  assert.equal(text.includes("Subtotal"), true);
+  assert.equal(text.includes("Descuento total"), true);
+  assert.equal(text.includes("-560,00 PEN"), true);
+  assert.equal(text.includes("TOTAL"), true);
+  assert.equal(text.includes("540,00 PEN"), true);
+  assert.equal(text.includes("Recibido"), false);
+  assert.equal(text.includes("Cambio"), false);
 });
 
 test("formats receipt dates with the branch timezone", () => {
